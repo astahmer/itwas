@@ -103,10 +103,12 @@ fn search_metadata(request: &SearchRequest) -> Result<Vec<SearchResult>> {
             fields.next(),
             fields.next(),
         ) else {
+            output.clear();
             continue;
         };
         let searchable = format!("{description}\n{bookmarks}\n{tags}");
         if !matches(&matcher, &searchable) {
+            output.clear();
             continue;
         }
         let title = description.lines().next().unwrap_or_default().to_owned();

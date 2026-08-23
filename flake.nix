@@ -5,7 +5,7 @@
 
   outputs = { nixpkgs, ... }:
     let
-      system = "aarch64-darwin";
+      system = if builtins ? currentSystem then builtins.currentSystem else "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
     in
     {
@@ -19,4 +19,3 @@
       };
     };
 }
-

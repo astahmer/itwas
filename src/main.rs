@@ -1,4 +1,5 @@
 mod search;
+mod tui;
 
 use std::path::PathBuf;
 
@@ -17,7 +18,7 @@ struct Cli {
     mode: CliMode,
 
     /// Jujutsu revset to search.
-    #[arg(short = 'x', long)]
+    #[arg(short, long)]
     revset: Option<String>,
 
     /// File prefix/fileset passed to Jujutsu where supported.
@@ -25,8 +26,12 @@ struct Cli {
     path: Option<String>,
 
     /// Interpret query as a regular expression.
-    #[arg(short, long)]
+    #[arg(short = 'x', long)]
     regex: bool,
+
+    /// Open the interactive picker even when QUERY is supplied.
+    #[arg(short, long)]
+    tui: bool,
 
     /// Search this repository rather than the current directory's repository.
     #[arg(short = 'R', long)]
@@ -52,6 +57,7 @@ impl From<CliMode> for Mode {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let open_tui = cli.tui || cli.query.is_none();
     let request = SearchRequest {
         query: cli.query.unwrap_or_default(),
         mode: cli.mode.into(),
@@ -62,9 +68,8 @@ fn main() -> Result<()> {
         limit: 200,
     };
 
-    if request.query.is_empty() {
-        eprintln!("interactive picker is coming next; pass a query for now");
-        return Ok(());
+    if open_tui {
+        return tui::run(request);
     }
 
     for result in search::search(&request)? {
