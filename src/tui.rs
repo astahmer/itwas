@@ -89,6 +89,9 @@ struct App {
     wc_commit_id: Option<String>,
     view: View,
     diff_scroll: usize,
+    /// Find-within-diff: input active + current filter.
+    diff_find_active: bool,
+    diff_query: String,
     diffs: HashMap<String, String>,
     diffs_loading: HashSet<String>,
     related: HashMap<String, Vec<actions::RelatedChange>>,
@@ -123,6 +126,8 @@ impl App {
             show_help: false,
             wc_commit_id: None,
             view: View::Preview,
+            diff_find_active: false,
+            diff_query: String::new(),
             diff_scroll: 0,
             diffs: HashMap::new(),
             diffs_loading: HashSet::new(),
@@ -394,11 +399,41 @@ impl App {
         self.diff_scroll = 0;
     }
 
-    fn scroll_diff(&mut self, delta: isize) {
-        let max = self
+    /// Enter find-within-diff mode (switches to the diff view if needed).
+    fn start_diff_find(&mut self) {
+        self.view = View::Diff;
+        self.diff_find_active = true;
+    }
+
+    fn filtered_diff_lines(&self) -> Vec<&str> {
+        let Some(diff) = self
             .current_commit()
             .and_then(|commit_id| self.diffs.get(commit_id))
-            .map_or(0, |diff| diff.lines().count());
+        else {
+            return Vec::new();
+        };
+        let lowered = self.diff_query.to_lowercase();
+        let matches = |line: &str| lowered.is_empty() || line.to_lowercase().contains(&lowered);
+        let mut lines = Vec::new();
+        // Keep the most recent hunk header above each match for context.
+        let mut last_hunk = None;
+        for line in diff.lines() {
+            if line.starts_with("@@") {
+                last_hunk = Some(line);
+                continue;
+            }
+            if matches(line) {
+                if let Some(hunk) = last_hunk.take() {
+                    lines.push((hunk, true));
+                }
+                lines.push((line, false));
+            }
+        }
+        lines.into_iter().map(|(line, _)| line).collect()
+    }
+
+    fn scroll_diff(&mut self, delta: isize) {
+        let max = self.filtered_diff_lines().len();
         self.diff_scroll = self.diff_scroll.saturating_add_signed(delta).min(max);
     }
 
@@ -588,6 +623,10 @@ fn handle_key_inner(app: &mut App, key: KeyEvent) -> Result<Flow> {
         }
         KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.toggle_diff_view();
+            Ok(Flow::Continue)
+        }
+        KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.start_diff_find();
             Ok(Flow::Continue)
         }
         KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -916,11 +955,22 @@ fn render_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     );
 }
 
+#[allow(clippy::too_many_lines)]
 fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
-    let title = if app.view == View::Diff {
-        " diff — Ctrl-D preview · PgUp/PgDn scroll "
+    let title: Line = if app.view == View::Diff {
+        if app.diff_find_active {
+            " diff — find: type to filter, Esc closes ".into()
+        } else if !app.diff_query.is_empty() {
+            format!(
+                " diff — filter: '{}' (Ctrl-F edit, PgUp/PgDn scroll) ",
+                app.diff_query
+            )
+            .into()
+        } else {
+            " diff — Ctrl-D preview · Ctrl-F find · PgUp/PgDn scroll ".into()
+        }
     } else {
-        " preview "
+        " preview ".into()
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     let lines: Vec<Line> = if app.view == View::Diff {
@@ -928,8 +978,9 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
             .current_commit()
             .and_then(|commit_id| app.diffs.get(commit_id));
         match text {
-            Some(diff) => diff
-                .lines()
+            Some(_) => app
+                .filtered_diff_lines()
+                .into_iter()
                 .skip(app.diff_scroll)
                 .map(|line| {
                     let style = if line.starts_with('+') && !line.starts_with("+++") {
@@ -1023,7 +1074,7 @@ fn render_help(frame: &mut ratatui::Frame) {
     let text = "\
 Tab fields (query/revset/path/after/until) · Ctrl-T lane · Ctrl-R literal/regex/fuzzy
 Ctrl-P revset preset · Ctrl-B bookmarks · Ctrl-D diff preview · PgUp/PgDn scroll
-Ctrl-A actions (copy/jj new/editor) · Enter print selection · Esc quit";
+Ctrl-A actions · Ctrl-D diff · Ctrl-F find-in-diff · Enter action menu · Esc quit";
     let area = centered_rect(frame.area(), 64, 7);
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -1112,8 +1163,9 @@ fn status_line(app: &App) -> String {
         "no matches — type to search, or Tab to edit revset/path".to_owned()
     } else {
         format!(
-            "{} · Tab fields · Ctrl-T lane · Ctrl-R match · Ctrl-P presets · Ctrl-B bookmarks · Ctrl-A actions · Ctrl-D diff",
-            count_label(app)
+            "{} · Tab fields · Ctrl-T lane · Ctrl-R match · Ctrl-P presets · Ctrl-B bookmarks · Ctrl-A actions · Ctrl-D diff{}",
+            count_label(app),
+            if app.view == View::Diff { " · Ctrl-F find" } else { "" }
         )
     }
 }

@@ -131,10 +131,12 @@ function Related({ commit }: { commit: string }) {
 function Diff({ commit }: { commit: string }) {
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState("");
   useEffect(() => {
     let alive = true;
     setDiff(null);
     setError(null);
+    setFilter("");
     fetch(`/api/diff?commit=${encodeURIComponent(commit)}`)
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error(r.statusText))))
       .then((text) => alive && setDiff(text))
@@ -145,36 +147,82 @@ function Diff({ commit }: { commit: string }) {
   }, [commit]);
   if (error) return <div className="error">{error}</div>;
   if (diff === null) return <Loader />;
+  const lowered = filter.trim().toLowerCase();
+  const lines = diff.split("\n").filter(
+    (line) =>
+      !lowered ||
+      line.toLowerCase().includes(lowered),
+  );
   return (
-    <pre className="diff">
-      {diff.split("\n").map((line, i) => (
-        <div
-          key={i}
-          className={
-            line.startsWith("+") && !line.startsWith("+++")
-              ? "add"
-              : line.startsWith("-") && !line.startsWith("---")
-                ? "del"
-                : line.startsWith("@@")
-                  ? "hunk"
-                  : undefined
-          }
-        >
-          {line || " "}
-        </div>
-      ))}
-    </pre>
+    <>
+      <TextField
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="find within this diff…"
+      />
+      <pre className="diff">
+        {lines.length === 0 ? (
+          <span className="date">no lines match '{filter}'</span>
+        ) : (
+          lines.map((line, i) => (
+            <div
+              key={i}
+              className={
+                line.startsWith("+") && !line.startsWith("+++")
+                  ? "add"
+                  : line.startsWith("-") && !line.startsWith("---")
+                    ? "del"
+                    : line.startsWith("@@")
+                      ? "hunk"
+                      : undefined
+              }
+            >
+              {line || " "}
+            </div>
+          ))
+        )}
+      </pre>
+    </>
   );
 }
 
+const VALID_MODES: Mode[] = ["metadata", "changes", "snapshot"];
+const VALID_MATCHES: MatchMode[] = ["literal", "regex", "fuzzy"];
+
+/** Initial filter state from the URL so ?q=…&revset=… links are shareable. */
+function stateFromUrl(): {
+  query: string;
+  revset: string;
+  path: string;
+  after: string;
+  until: string;
+  mode: Mode;
+  matchMode: MatchMode;
+} {
+  const params = new URLSearchParams(window.location.search);
+  const modeParam = params.get("mode") as Mode | null;
+  const matchParam = params.get("match") as MatchMode | null;
+  return {
+    query: params.get("q") ?? "",
+    revset: params.get("revset") ?? "",
+    path: params.get("path") ?? "",
+    after: params.get("after") ?? "",
+    until: params.get("until") ?? "",
+    mode: modeParam && VALID_MODES.includes(modeParam) ? modeParam : "metadata",
+    matchMode:
+      matchParam && VALID_MATCHES.includes(matchParam) ? matchParam : "literal",
+  };
+}
+
 export default function App() {
-  const [query, setQuery] = useState("");
-  const [revset, setRevset] = useState("");
-  const [path, setPath] = useState("");
-  const [after, setAfter] = useState("");
-  const [until, setUntil] = useState("");
-  const [mode, setMode] = useState<Mode>("metadata");
-  const [matchMode, setMatchMode] = useState<MatchMode>("literal");
+  const [initial] = useState(stateFromUrl);
+  const [query, setQuery] = useState(initial.query);
+  const [revset, setRevset] = useState(initial.revset);
+  const [path, setPath] = useState(initial.path);
+  const [after, setAfter] = useState(initial.after);
+  const [until, setUntil] = useState(initial.until);
+  const [mode, setMode] = useState<Mode>(initial.mode);
+  const [matchMode, setMatchMode] = useState<MatchMode>(initial.matchMode);
   const [limit, setLimit] = useState(200);
   const [data, setData] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -194,6 +242,13 @@ export default function App() {
     if (until.trim()) p.set("until", until.trim());
     return p.toString();
   }, [query, revset, path, after, until, mode, matchMode, limit]);
+
+  // Keep the address bar in sync so any search is a shareable permalink.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.search = params;
+    window.history.replaceState(null, "", url);
+  }, [params]);
 
   // Search immediately on mount and on every debounced change.
   useEffect(() => {
