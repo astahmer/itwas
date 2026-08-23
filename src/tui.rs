@@ -68,6 +68,7 @@ enum WorkerMessage {
     Complete(u64, Result<search::SearchOutput, String>),
     Stats(Vec<(String, actions::DiffStat)>),
     Diff(String, Result<String, String>),
+    Related(String, Result<Vec<actions::RelatedChange>, String>),
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -90,6 +91,8 @@ struct App {
     diff_scroll: usize,
     diffs: HashMap<String, String>,
     diffs_loading: HashSet<String>,
+    related: HashMap<String, Vec<actions::RelatedChange>>,
+    related_loading: HashSet<String>,
     stats: HashMap<String, actions::DiffStat>,
     stat_queue: VecDeque<String>,
     stat_busy: bool,
@@ -123,6 +126,8 @@ impl App {
             diff_scroll: 0,
             diffs: HashMap::new(),
             diffs_loading: HashSet::new(),
+            related: HashMap::new(),
+            related_loading: HashSet::new(),
             stats: HashMap::new(),
             stat_queue: VecDeque::new(),
             stat_busy: false,
@@ -166,6 +171,7 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn tick(&mut self) {
         while let Ok(message) = self.receiver.try_recv() {
             match message {
@@ -194,6 +200,12 @@ impl App {
                     self.stat_busy = false;
                     for (commit_id, stat) in batch {
                         self.stats.insert(commit_id, stat);
+                    }
+                }
+                WorkerMessage::Related(commit_id, outcome) => {
+                    self.related_loading.remove(&commit_id);
+                    if let Ok(related) = outcome {
+                        self.related.insert(commit_id, related);
                     }
                 }
                 WorkerMessage::Diff(commit_id, outcome) => {
@@ -228,6 +240,19 @@ impl App {
                     })
                     .collect::<Vec<_>>();
                 let _ = sender.send(WorkerMessage::Stats(fetched));
+            });
+        }
+
+        if let Some(commit_id) = self.current_commit().cloned()
+            && !self.related.contains_key(&commit_id)
+            && !self.related_loading.contains(&commit_id)
+        {
+            self.related_loading.insert(commit_id.clone());
+            let sender = self.sender.clone();
+            thread::spawn(move || {
+                let outcome = actions::fetch_related(None, &commit_id)
+                    .map_err(|error| format!("{error:#}"));
+                let _ = sender.send(WorkerMessage::Related(commit_id, outcome));
             });
         }
 
@@ -536,13 +561,10 @@ fn handle_key_inner(app: &mut App, key: KeyEvent) -> Result<Flow> {
             Ok(Flow::Continue)
         }
         KeyCode::Enter => {
-            if let Some(result) = app.current_result() {
-                app.final_message =
-                    Some(format!("{}\n# jj new {}", result.display_line(), result.change_id));
-            } else {
-                app.final_message = None;
-            }
-            Ok(Flow::Quit)
+            // Open the action menu instead of exiting; 'p' inside it keeps
+            // the old print-and-exit behavior for scripting.
+            app.actions_popup = app.current_result().is_some();
+            Ok(Flow::Continue)
         }
         KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             app.show_help = !app.show_help;
@@ -609,9 +631,16 @@ fn handle_bookmark_key(app: &mut App, key: KeyEvent) -> bool {
 fn handle_action_key(app: &mut App, key: KeyEvent) -> Flow {
     let selected = app.current_result().cloned();
     app.actions_popup = false;
-    #[allow(clippy::match_same_arms)]
+    #[allow(clippy::match_same_arms)] // Esc/'a'/'q' and '_' all just close
     match key.code {
-        KeyCode::Esc | KeyCode::Char('a') => Flow::Continue,
+        KeyCode::Char('p') => {
+            if let Some(result) = selected {
+                app.final_message =
+                    Some(format!("{}\n# jj new {}", result.display_line(), result.change_id));
+            }
+            Flow::Quit
+        }
+        KeyCode::Esc | KeyCode::Char('a' | 'q') => Flow::Continue,
         KeyCode::Char('c') => {
             if let Some(result) = selected {
                 match actions::copy_to_clipboard(&result.change_id) {
@@ -943,6 +972,37 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 } else {
                     for detail_line in detail_lines {
                         lines.push(Line::from(detail_line.to_owned()));
+                    }
+                }
+                if let Some(related) = app.related.get(&result.commit_id)
+                    && !related.is_empty()
+                {
+                    lines.push(Line::from(Span::raw("")));
+                    lines.push(Line::from(Span::styled(
+                        "related:",
+                        Style::default().fg(Color::DarkGray),
+                    )));
+                    for change in related {
+                        let when = change
+                            .timestamp
+                            .map_or_else(String::new, |ts| format!(" {}", dates::relative(ts)));
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("  {:<7}", format!("[{}]", change.relation)),
+                                Style::default().fg(if change.relation == "parent" {
+                                    Color::Blue
+                                } else {
+                                    Color::Magenta
+                                }),
+                            ),
+                            Span::styled(
+                                change.change_id.clone(),
+                                Style::default().add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(when, Style::default().fg(Color::DarkGray)),
+                            Span::raw("  "),
+                            Span::raw(change.title.clone()),
+                        ]));
                     }
                 }
                 lines

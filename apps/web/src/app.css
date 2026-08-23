@@ -68,6 +68,13 @@ main {
 .detail-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .author, .detail .date { color: #6e7681; }
 .description { white-space: pre-wrap; margin: 0; color: #adbac7; }
+.related-row {
+  display: flex; gap: 8px; align-items: baseline; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; font-size: 13px;
+}
+.relation.parent { color: #58a6ff; }
+.relation.child { color: #d2a8ff; }
+
 .diff {
   margin: 0; font-size: 12px; line-height: 1.45;
   background: #010409; border-radius: 6px; padding: 10px;

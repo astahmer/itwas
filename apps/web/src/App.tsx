@@ -1,7 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, CopyButton, Field, Input, Loader } from "kumo-ui";
+import { useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
+// NOTE: kumo-ui's published bundle embeds its own React, which crashes hooks
+// ("Cannot read properties of null (reading 'useState')") when mixed with ours.
+// We therefore reuse only its stylesheet and render the equivalent markup
+// (.button/.primary/.secondary/.input/.label/.spinner-small classes) ourselves.
 import "kumo-ui/styles.css";
 import "./app.css";
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="field-wrapper">
+      <span className="label">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function TextField(props: InputHTMLAttributes<HTMLInputElement>) {
+  return <input className="input" {...props} />;
+}
+
+function Loader() {
+  return <div className="loader-small"><div className="spinner-small" /></div>;
+}
 
 type Mode = "metadata" | "changes" | "snapshot";
 type MatchMode = "literal" | "regex" | "fuzzy";
@@ -17,6 +37,13 @@ interface SearchResult {
   timestamp: number | null;
   file: string | null;
   line: number | null;
+}
+
+interface RelatedChange {
+  relation: "parent" | "child";
+  change_id: string;
+  timestamp: number | null;
+  title: string;
 }
 
 interface SearchResponse {
@@ -62,6 +89,43 @@ function absolute(timestamp: number): string {
   const d = new Date(timestamp * 1000);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function Related({ commit }: { commit: string }) {
+  const [related, setRelated] = useState<RelatedChange[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/related?commit=${encodeURIComponent(commit)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.statusText))))
+      .then((body) => alive && setRelated(body))
+      .catch(() => alive && setRelated([]));
+    return () => {
+      alive = false;
+    };
+  }, [commit]);
+  if (related === null) return <Loader />;
+  if (related.length === 0) return null;
+  return (
+    <div>
+      {related.map((change) => (
+        <div key={change.relation + change.change_id} className="related-row">
+          <span className={`relation ${change.relation}`}>
+            [{change.relation}]
+          </span>
+          <span
+            className="change-id"
+            style={{ color: `hsl(${hashHue(change.change_id)}, 85%, 62%)` }}
+          >
+            {change.change_id}
+          </span>
+          {change.timestamp !== null && (
+            <span className="date">{relative(change.timestamp)}</span>
+          )}
+          <span>{change.title}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function Diff({ commit }: { commit: string }) {
@@ -185,19 +249,19 @@ export default function App() {
 
       <section className="controls">
         <Field label="query">
-          <Input value={query} onChange={(e: any) => setQuery(e.target.value)} placeholder="type to search" autoFocus />
+          <TextField value={query} onChange={(e) => setQuery(e.target.value)} placeholder="type to search" autoFocus />
         </Field>
         <Field label="revset">
-          <Input value={revset} onChange={(e: any) => setRevset(e.target.value)} placeholder="all()" />
+          <TextField value={revset} onChange={(e) => setRevset(e.target.value)} placeholder="all()" />
         </Field>
         <Field label="path">
-          <Input value={path} onChange={(e: any) => setPath(e.target.value)} placeholder="any" />
+          <TextField value={path} onChange={(e) => setPath(e.target.value)} placeholder="any" />
         </Field>
         <Field label="after">
-          <Input value={after} onChange={(e: any) => setAfter(e.target.value)} placeholder={DATE_HINT} />
+          <TextField value={after} onChange={(e) => setAfter(e.target.value)} placeholder={DATE_HINT} />
         </Field>
         <Field label="until">
-          <Input value={until} onChange={(e: any) => setUntil(e.target.value)} />
+          <TextField value={until} onChange={(e) => setUntil(e.target.value)} />
         </Field>
         <div className="toggles">
           <div className="segmented">
@@ -268,8 +332,20 @@ export default function App() {
               <span className="change-id" style={{ color: `hsl(${hashHue(selectedResult.change_id)}, 85%, 62%)` }}>
                 {selectedResult.change_id}
               </span>
-              <CopyButton title="copy change id">{selectedResult.change_id}</CopyButton>
-              <CopyButton title="copy jj new command">jj new {selectedResult.change_id}</CopyButton>
+              <button
+                className="button secondary"
+                onClick={() => navigator.clipboard?.writeText(selectedResult.change_id)}
+              >
+                copy id
+              </button>
+              <button
+                className="button secondary"
+                onClick={() =>
+                  navigator.clipboard?.writeText(`jj new ${selectedResult.change_id}`)
+                }
+              >
+                copy jj new
+              </button>
               {selectedResult.author && <span className="author">{selectedResult.author}</span>}
               {selectedResult.timestamp !== null && (
                 <span className="date">{absolute(selectedResult.timestamp)}</span>
@@ -280,13 +356,16 @@ export default function App() {
                 {selectedResult.detail.split("\n").slice(1).join("\n")}
               </p>
             )}
+            <Related commit={selectedResult.commit_id} />
             <Diff commit={selectedResult.commit_id} />
           </aside>
         )}
       </main>
 
       <footer>
-        <Button onClick={() => window.location.reload()}>refresh</Button>
+        <button className="button third" onClick={() => window.location.reload()}>
+          refresh
+        </button>
         <span>everything the CLI does — no terminal required</span>
       </footer>
     </div>

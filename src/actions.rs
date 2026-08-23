@@ -100,6 +100,54 @@ fn extract_number(line: &str, keyword: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+#[derive(Clone, Debug)]
+pub struct RelatedChange {
+    pub relation: &'static str,
+    pub change_id: String,
+    pub timestamp: Option<i64>,
+    pub title: String,
+}
+
+/// Parents and children of a revision, newest-first within each group.
+pub fn fetch_related(
+    repository: Option<&std::path::Path>,
+    commit_id: &str,
+) -> Result<Vec<RelatedChange>> {
+    let mut related = Vec::new();
+    for (relation, suffix) in [("parent", "-"), ("child", "+")] {
+        let mut command = jj(repository);
+        command.args([
+            "log",
+            "--no-graph",
+            "--revisions",
+            &format!("({commit_id}{suffix})"),
+            "--template",
+            r#"change_id.shortest(4) ++ "" ++ committer.timestamp().format("%s") ++ "" ++ description.first_line() ++ """#,
+        ]);
+        let output = command.output().context("failed to run jj")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "{}",
+                String::from_utf8_lossy(&output.stderr).trim().to_owned()
+            );
+        }
+        for record in String::from_utf8_lossy(&output.stdout).split('\u{1e}') {
+            let record = record.trim_start();
+            if record.is_empty() {
+                continue;
+            }
+            let mut fields = record.split('\u{1f}');
+            related.push(RelatedChange {
+                relation,
+                change_id: fields.next().unwrap_or_default().to_owned(),
+                timestamp: fields.next().and_then(|value| value.parse().ok()),
+                title: fields.next().unwrap_or_default().to_owned(),
+            });
+        }
+    }
+    Ok(related)
+}
+
 /// Full patch text of a revision (`jj diff --git`).
 pub fn fetch_full_diff(repository: Option<&std::path::Path>, commit_id: &str) -> Result<String> {
     let output = jj(repository)

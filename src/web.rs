@@ -108,6 +108,53 @@ fn route(
             Ok(names) => json_response(200, format!("[{}]", names.iter().map(|name| json_string(name)).collect::<Vec<_>>().join(",")).into_bytes()),
             Err(error) => json_error(500, &format!("{error:#}")),
         },
+        "/api/related" => {
+            let Some(commit) = param(params, "commit") else {
+                return json_error(400, "missing commit");
+            };
+            match crate::actions::fetch_related(repository.as_deref(), &commit) {
+                Ok(related) => {
+                    let items = related
+                        .iter()
+                        .map(|change| {
+                            format!(
+                                "{{\"relation\":{},\"change_id\":{},\"timestamp\":{},\"title\":{}}}",
+                                json_string(change.relation),
+                                json_string(&change.change_id),
+                                change.timestamp.map_or("null".to_owned(), |ts| ts.to_string()),
+                                json_string(&change.title),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    json_response(200, format!("[{items}]").into_bytes())
+                }
+                Err(error) => json_error(500, &format!("{error:#}")),
+            }
+        }
+        "/api/stats" => {
+            let Some(commits) = param(params, "commits") else {
+                return json_error(400, "missing commits");
+            };
+            let mut batch = String::from("{");
+            for commit in commits.split(',').filter(|c| !c.is_empty()) {
+                if let Some(stat) =
+                    crate::actions::fetch_diffstat(repository.as_deref(), commit)
+                {
+                    if !batch.ends_with('{') {
+                        batch.push(',');
+                    }
+                    batch.push_str(&json_string(commit));
+                    batch.push_str(":{\"added\":");
+                    batch.push_str(&stat.added.to_string());
+                    batch.push_str(",\"removed\":");
+                    batch.push_str(&stat.removed.to_string());
+                    batch.push('}');
+                }
+            }
+            batch.push('}');
+            json_response(200, batch.into_bytes())
+        }
         "/api/diffstat" => {
             let Some(commit) = param(params, "commit") else {
                 return json_error(400, "missing commit");
