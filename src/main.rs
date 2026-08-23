@@ -17,7 +17,7 @@ struct Cli {
     mode: CliMode,
 
     /// Jujutsu revset to search.
-    #[arg(short, long)]
+    #[arg(short = 'x', long)]
     revset: Option<String>,
 
     /// File prefix/fileset passed to Jujutsu where supported.
