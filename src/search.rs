@@ -55,6 +55,19 @@ pub enum MatchMode {
     Fuzzy,
 }
 
+impl std::str::FromStr for MatchMode {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "literal" => Ok(Self::Literal),
+            "regex" => Ok(Self::Regex),
+            "fuzzy" => Ok(Self::Fuzzy),
+            other => anyhow::bail!("unknown match mode '{other}'"),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SearchRequest {
     pub query: String,
@@ -285,7 +298,7 @@ fn search_metadata(request: &SearchRequest) -> Result<SearchOutput> {
         "--revisions",
         request.revset.as_deref().unwrap_or("all()"),
         "--template",
-        "commit_id ++ \"\\x1f\" ++ change_id.shortest(12) ++ \"\\x1f\" ++ description ++ \"\\x1f\" \
+        "commit_id ++ \"\\x1f\" ++ change_id.shortest(4) ++ \"\\x1f\" ++ description ++ \"\\x1f\" \
          ++ bookmarks.join(\",\") ++ \"\\x1f\" ++ tags.join(\",\") ++ \"\\x1f\" \
          ++ committer.timestamp().format(\"%s\") ++ \"\\x1f\" ++ author.email() ++ \"\\x1e\"",
     ]);
@@ -376,7 +389,7 @@ fn search_changes(request: &SearchRequest) -> Result<SearchOutput> {
         "--patch",
         "--git",
         "--template",
-        "commit_id ++ \"\\x1f\" ++ change_id.shortest(12) ++ \"\\x1f\" ++ description.first_line() \
+        "commit_id ++ \"\\x1f\" ++ change_id.shortest(4) ++ \"\\x1f\" ++ description.first_line() \
          ++ \"\\x1f\" ++ committer.timestamp().format(\"%s\") ++ \"\\x1f\" ++ author.email() ++ \"\\x1e\\n\"",
     ]);
     if let Some(path) = &request.path {
@@ -500,7 +513,7 @@ fn resolve_revision(request: &SearchRequest, revision: &str) -> Result<(String, 
         revision,
         "--no-graph",
         "-T",
-        "commit_id ++ \"\\x1f\" ++ change_id.shortest(12)",
+        "commit_id ++ \"\\x1f\" ++ change_id.shortest(4)",
     ]);
     let mut child = spawn(command)?;
     let stdout = child.stdout.take().expect("stdout is piped");

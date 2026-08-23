@@ -146,15 +146,22 @@ impl App {
         self.request.since = None;
         self.request.until = None;
         if !self.after_input.trim().is_empty() {
-            match dates::parse(&self.after_input) {
-                Some(timestamp) => self.request.since = Some(timestamp),
-                None => self.error = Some(format!("invalid after date: {}", self.after_input)),
+            if let Some(timestamp) = dates::parse(&self.after_input) { self.request.since = Some(timestamp) } else {
+                self.error = Some(format!(
+                    "invalid after date '{}' — accepted: {}",
+                    self.after_input,
+                    dates::FORMAT_HINT
+                ));
+                return;
             }
         }
         if !self.until_input.trim().is_empty() {
-            match dates::parse_with_end(&self.until_input, true) {
-                Some(timestamp) => self.request.until = Some(timestamp),
-                None => self.error = Some(format!("invalid until date: {}", self.until_input)),
+            if let Some(timestamp) = dates::parse_with_end(&self.until_input, true) { self.request.until = Some(timestamp) } else {
+                self.error = Some(format!(
+                    "invalid until date '{}' — accepted: {}",
+                    self.until_input,
+                    dates::FORMAT_HINT
+                ));
             }
         }
     }
@@ -752,21 +759,20 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect) {
     );
 }
 
-/// Approximation of jj's default change-id coloring: each letter maps to a
-/// stable hue on the red→blue spectrum, alternating light/dark per position.
-fn change_id_spans(change_id: &str) -> Vec<Span<'static>> {
-    change_id
-        .chars()
-        .enumerate()
-        .map(|(index, character)| {
-            let letter_index = character.to_ascii_lowercase() as u8 - b'a';
-            let hue = f32::from((u16::from(letter_index) * 37 % 240) as u8);
-            Span::styled(
-                character.to_string(),
-                Style::default().fg(hsl_color(hue, 0.85, if index % 2 == 0 { 0.62 } else { 0.45 })),
-            )
-        })
-        .collect()
+/// jj-style change-id section: the shortest unique prefix rendered bold in a
+/// single per-commit hue (derived from the id itself), not per-letter colors.
+fn change_id_span(change_id: &str) -> Span<'static> {
+    let mut hash = 0_u32;
+    for byte in change_id.bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(u32::from(byte));
+    }
+    let hue = f32::from((hash % 360 / 2) as u8 * 2);
+    Span::styled(
+        change_id.to_owned(),
+        Style::default()
+            .fg(hsl_color(hue, 0.85, 0.62))
+            .add_modifier(Modifier::BOLD),
+    )
 }
 
 fn hsl_color(hue_degrees: f32, saturation: f32, lightness: f32) -> Color {
@@ -820,7 +826,7 @@ fn render_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(" "),
             ];
-            spans.extend(change_id_spans(&result.change_id));
+            spans.push(change_id_span(&result.change_id));
             spans.push(Span::raw(" "));
             for bookmark in &result.bookmarks {
                 let color = if matches!(bookmark.as_str(), "main" | "master" | "trunk") {
@@ -918,10 +924,7 @@ fn render_detail(frame: &mut ratatui::Frame, app: &App, area: Rect) {
         match app.current_result() {
             Some(result) => {
                 let mut lines = vec![Line::from(vec![
-                    Span::styled(
-                        result.change_id.clone(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ),
+                    change_id_span(&result.change_id),
                     Span::raw("  "),
                     Span::styled(
                         result.author.clone().unwrap_or_default(),

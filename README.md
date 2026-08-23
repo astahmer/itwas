@@ -136,6 +136,26 @@ Results render jj-style from launch: per-letter colored change ids, an `@`
 working-copy marker, yellow/green bookmarks, relative dates, and a live match
 count (`N matches` / `N+ matches` when capped).
 
+## Web UI
+
+`itwas web` serves the same functionality in the browser — for the
+terminal-averse:
+
+```sh
+itwas web                    # http://127.0.0.1:7878
+itwas web -p 9000 -R ~/dev/somerepo
+```
+
+The frontend is a pre-built Vite + React app using
+[kumo-ui](https://kumo-ui.com), embedded into the binary at compile time. Every
+CLI capability is available: all three lanes, revset/path/date scoping, match
+modes, diffstats, and full diffs of the selected revision. Rebuild it with:
+
+```sh
+cd apps/web && npm install && npm run build   # outputs to assets/web/
+cargo build --release                          # re-embeds assets/web
+```
+
 ## Scripting
 
 ```sh

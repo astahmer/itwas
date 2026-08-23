@@ -9,6 +9,10 @@ use time::{
 
 static LOCAL_OFFSET: OnceLock<UtcOffset> = OnceLock::new();
 
+/// Human-readable summary of every accepted date expression.
+pub const FORMAT_HINT: &str =
+    "YYYY-MM-DD · YYYY-MM-DD HH:MM · 30m/12h/2d/3w · today/yesterday/now";
+
 /// Capture the local UTC offset once, before any worker threads are spawned.
 /// `OffsetDateTime::now_local()` is unsound to call in multithreaded contexts.
 pub fn init() {

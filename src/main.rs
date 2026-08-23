@@ -4,6 +4,7 @@ mod dates;
 mod fuzzy;
 mod search;
 mod tui;
+mod web;
 
 use std::path::PathBuf;
 
@@ -84,6 +85,9 @@ impl From<CliMode> for Mode {
 
 fn main() -> Result<()> {
     dates::init();
+    if std::env::args().nth(1).as_deref() == Some("web") {
+        return web::run_from_args(std::env::args().skip(2));
+    }
     let cli = Cli::parse();
     let stored = Config::load().unwrap_or_default();
 
@@ -104,8 +108,12 @@ fn main() -> Result<()> {
         mode: cli.mode.map(Mode::from).or(stored.mode).unwrap_or_default(),
         revset: cli.revset.or(stored.revset),
         path: cli.path.or(stored.path),
-        since: cli.since.as_deref().and_then(dates::parse),
-        until: cli.until.as_deref().and_then(|value| dates::parse_with_end(value, true)),
+        since: cli.since.as_deref().map(|value| {
+            dates::parse(value).unwrap_or_else(|| panic_date_flag("--since", value))
+        }),
+        until: cli.until.as_deref().map(|value| {
+            dates::parse_with_end(value, true).unwrap_or_else(|| panic_date_flag("--until", value))
+        }),
         match_mode,
         limit: cli.limit.or(stored.limit).unwrap_or(200),
         ..SearchRequest::default()
@@ -167,6 +175,12 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+// Diverges via process::exit after printing a hint.
+fn panic_date_flag(flag: &str, value: &str) -> i64 {
+    eprintln!("{flag}: invalid date '{value}' — accepted: {}", dates::FORMAT_HINT);
+    std::process::exit(2);
 }
 
 fn crate_json_string(value: &str) -> String {
