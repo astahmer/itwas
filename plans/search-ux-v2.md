@@ -152,14 +152,17 @@ struct SearchResult {
 
 ## Acceptance criteria
 
-- [ ] Opening TUI shows results immediately; clearing the query resets to full scope, never stale.
-- [ ] `--revset` with a nonexistent bookmark produces an actionable error, not raw jj stderr.
-- [ ] Result rows show colored change IDs, `@` marker, bookmarks, relative date; preview shows absolute date + author.
-- [ ] Selected revision shows colored `+X −Y`; stats never block typing (lazy/debounced).
-- [ ] Match count always visible, including cap indicator.
-- [ ] `--since/--until` filter results correctly in all three lanes (or metadata+changes with documented snapshot caveat).
-- [ ] Snapshot results include change IDs.
-- [ ] Performance contract holds: still one streaming pass per search keystroke burst; no index.
+- [x] Opening TUI shows results immediately; clearing the query resets to full scope, never stale.
+- [x] `--revset` with a nonexistent bookmark produces an actionable error, not raw jj stderr.
+- [x] Result rows show colored change IDs, `@` marker, bookmarks, relative date; preview shows absolute date + author.
+- [x] Selected revision shows colored `+X −Y`; stats never block typing (lazy per-selection + background batch prefetch).
+- [x] Match count always visible, including cap indicator.
+- [x] `--since/--until` and query prefixes (`after:`/`before:`) filter metadata + changes lanes (documented caveat: snapshot is single-revision).
+- [x] Snapshot results include change IDs.
+- [x] Performance contract holds: still one streaming pass per search keystroke burst; no index. Early-cap streams abandon the child via pipe-close (EPIPE), no deadlock.
+- [x] Extra features shipped: diff preview (Ctrl-D, PgUp/PgDn), actions popup (Ctrl-A: c/n/e), fuzzy mode (Ctrl-R), revset presets (Ctrl-P), bookmark quick-pick (Ctrl-B), config.toml, --json, multi-repo -R.
+
+Verified 2026-08-23 against jj 0.44 in this repo: 18 unit tests green; CLI lanes (metadata/changes/snapshot, since/until, json, friendly errors) exercised; TUI smoke-tested under pty (render, presets, fields, overlay, popup, diff view, Esc quit).
 
 ## Decisions log
 

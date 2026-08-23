@@ -99,13 +99,65 @@ To stop using the absolute path, either `cargo install --path .` (symlinks into
   revset to resolve to one revision. Files are read one at a time.
 
 Use `--revset`, `--path`, and `--regex` (`-x`) to narrow results. Literal search
-is case-insensitive; regex search preserves regex case behavior.
+is case-insensitive; regex search preserves regex case behavior; `--fuzzy`
+(`-z`) matches case-insensitive subsequences.
+
+### Date filtering
+
+Filter by commit date with flags or typed prefixes inside the query:
+
+```sh
+itwas --since 2026-08-01 --until 2026-08-15 migration       # inclusive day range
+itwas --since 2w 'retryId'                                  # last two weeks
+itwas 'after:2026-08-20 before:2026-08-23 error'            # same thing, inline
+```
+
+Accepted expressions: `YYYY-MM-DD`, `YYYY-MM-DD HH:MM`, relative `Nm`/`Nh`/
+`Nd`/`Nw`, and `today`/`yesterday`/`now`. `before:`/`until:` are inclusive of
+the whole named day. Date filters apply to the metadata and changes lanes.
 
 ## Picker keys
 
-`Tab` changes active query/revset/path field. `Ctrl-T` cycles lanes. `Ctrl-R`
-toggles regex. Arrow keys move the preview selection. `Ctrl-H` shows help and
-`Esc` exits.
+- `Tab` cycles fields: query · revset · path · after · until (dates use the
+  same expressions as above).
+- `Ctrl-T` changes lane. `Ctrl-R` cycles literal → regex → fuzzy.
+- `Ctrl-P` cycles revset presets (`all()` → `main..@` → `mine()` → `@--`).
+- `Ctrl-B` opens a bookmark quick-pick (type to filter, Enter selects).
+- Arrow keys move the selection; the selected row gets an immediate diffstat
+  (`+X −Y`) while visible rows are batch-prefetched in the background.
+- `Ctrl-D` toggles a full colored diff of the selected revision; `PgUp`/`PgDn`
+  scroll it.
+- `Ctrl-A` opens the action popup: copy change id (`c`), copy `jj new <id>`
+  (`n`), open the file at that line in `$EDITOR` (`e`).
+- `Enter` prints the selected result plus a `jj new <id>` hint and exits.
+- `Ctrl-H` toggles help. `Esc` exits.
+
+Results render jj-style from launch: per-letter colored change ids, an `@`
+working-copy marker, yellow/green bookmarks, relative dates, and a live match
+count (`N matches` / `N+ matches` when capped).
+
+## Scripting
+
+```sh
+itwas --json --limit 50 'retryId'        # machine-readable output
+itwas -R ~/dev/a -R ~/dev/b 'panic'      # search several repositories
+```
+
+Exit code is 1 when no results match.
+
+## Configuration
+
+Optional `~/.config/itwas/config.toml`:
+
+```toml
+mode = "metadata"      # metadata | changes | snapshot
+match = "literal"      # literal | regex | fuzzy
+revset = "all()"
+path = ""
+limit = 200
+```
+
+CLI flags override the config file.
 
 All JJ calls use `--ignore-working-copy`, so opening the tool never snapshots
 or rewrites your working copy.
