@@ -19,6 +19,14 @@ Make itwas results look and read like `jj log`: colored change IDs, bookmarks, r
 
 ## What
 
+0. **Extra features (all accepted into v2 scope)**:
+   - Full scrollable diff preview of selected commit (lazy `jj diff --git`, Ctrl-D toggle, PgUp/PgDn scroll).
+   - Actions popup on selection: `c` copy change ID (pbcopy/xclip/wl-copy), `n` print `jj new <id>` hint, `e` open file at line in `$EDITOR`.
+   - Fuzzy matching as third match mode (Ctrl-R cycles literal → regex → fuzzy).
+   - Revset presets (Ctrl-P).
+   - Config file `~/.config/itwas/config.toml`: default lane, revset, limit, match mode.
+   - `--json` output mode (hand-rolled serializer, no serde dep).
+   - Multi-repo CLI search: repeatable `-R/--repository`; TUI uses the first repo only (documented).
 1. **Fixes**: initial/empty-query search behavior, path semantics per lane, friendly revset errors, duplicate title line, snapshot `change_id`.
 2. **Result rendering (jj-style, minimal color)**:
    - Change ID rendered with jj's per-letter coloring scheme (open/closed letters), `@` marker for working copy, bookmarks in yellow/green as in default jj theme.
@@ -27,9 +35,9 @@ Make itwas results look and read like `jj log`: colored change IDs, bookmarks, r
    - Each result row: relative date (`2 days ago`) + absolute on preview/selection (`2026-08-21 14:03`).
    - Short diffstat `+X −Y` per revision, properly colored (+ green / − red), computed lazily for the selected revision (not per row) to keep streaming cheap; optional batched `--summary` pass if per-row proves affordable.
 4. **Scoping**:
-   - Revset field already exists; add bookmark quick-pick (list bookmarks via `jj bookmark list`, insert into revset field).
-   - Date filter: `--since` / `--until` (CLI flags + TUI fields or prefix syntax like `>2026-08-01`), applied either client-side on fetched timestamps or translated to a jj revset function if available in the pinned jj version.
-5. **Counts**: header/status shows `N matches` (plus "200+ (capped)" when the limit truncated).
+   - Revset field already exists; add bookmark quick-pick (Ctrl-B lists bookmarks via `jj bookmark list`, inserts into revset field) and revset presets (Ctrl-P cycles `all()` / `main..@` / `mine()` / `@--`).
+   - Date filter, both input styles: typed prefixes parsed out of the query (`after:<date>`, `before:<date>`; aliases `since:`/`until:`) AND dedicated Tab-editable After/Until fields backed by the same parsed model. Formats: `YYYY-MM-DD[ HH:MM]`, relative `Nd`/`Nw`/`Nh`/`Nm`, `today`/`yesterday`/`now`. Applied client-side on fetched timestamps.
+5. **Counts**: header/status shows `N matches` (plus `N+ (capped)` when the limit truncated; detected via limit+1 fetch).
 
 ## Why
 
@@ -65,10 +73,12 @@ jj log --template(delimited fields)          jj show/diff --stat (lazy)
 
 | Choice | Decision | Rationale |
 |--------|----------|-----------|
-| Date filtering client-side vs revset fn | Client-side on timestamps from template | jj revset date functions vary by version; template `committer_timestamp()` is stable. Revisit if profiling shows waste |
-| Diffstat source | `jj diff --stat -r <rev>` lazy per selection | Per-row stats would break the single-streaming-pass performance contract |
-| Change-ID letter coloring | Port jj's algorithm (hash-based letter stability classes) | Matches user muscle memory from official CLI |
-| Relative dates | Hand-rolled formatter (~30 LOC) | Avoids pulling a time crate for one feature; `chrono`/`time` optional if timezone edge cases bite |
+| Date filtering client-side vs revset fn | Client-side on timestamps from template (`committer.timestamp().format("%s")` → unix secs, verified on jj 0.44) | jj revset date functions vary by version; unix-sec template field is stable |
+| Diffstat source | Lazy per-selection `jj diff --stat` immediately + background batch prefetch of visible rows | Instant answer where eyes are, amortized cost elsewhere |
+| Change-ID letter coloring | Per-character hash-driven hue interpolation (approximation of jj's red↔blue scheme) | Matches user muscle memory without vendoring jj internals |
+| Relative dates / parsing | `time` crate (formatting+parsing+local-offset); local offset captured once at startup before threads spawn | `now_local()` is unsound after threads start; caching at startup sidesteps it |
+| JSON output | Hand-rolled serializer | Trivial escaping avoids serde/serde_json dep weight |
+| Working-copy marker | One-time `jj log -r @` probe at TUI startup, compare commit ids in Rust | Template-level comparison not portable across jj versions |
 
 ### Architecture
 
@@ -134,11 +144,11 @@ struct SearchResult {
 
 ## Open questions
 
-1. Enter-on-result behavior: print change ID only, or also offer actions (`jj new`, copy to clipboard)?
-2. Date input style in TUI: dedicated fields (more Tab stops) vs typed prefixes in query (e.g. `after:2026-08-01 …`)?
-3. Per-row diffstats: lazy-only acceptable, or try batched `--summary` pass for all visible rows?
-4. Should empty-query initial search be opt-out (large monorepos where `all()` is huge)? Cap already bounds cost.
-5. Minimum supported jj version to pin (template/timestamp features)?
+1. RESOLVED — Enter prints the selected result + `jj new <id>` hint to stdout and exits; action popup (`c` copy / `n` hint / `e` editor) covers the rest.
+2. RESOLVED — both: typed prefixes in query AND Tab-editable After/Until fields over the same model.
+3. RESOLVED — both: immediate lazy stat on selection + background batch prefetch of visible rows.
+4. RESOLVED — always run initial search, capped at limit, lazy/background everywhere.
+5. Minimum supported jj version to pin (template/timestamp features)? Current dev target: jj 0.44.
 
 ## Acceptance criteria
 
@@ -156,3 +166,5 @@ struct SearchResult {
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-08-23 | Plan only; no implementation yet | User asked for a plan first |
+| 2026-08-23 | All open questions resolved; extra features folded into v2 scope | User decisions |
+| 2026-08-23 | Date filters applied client-side on unix-secs from template | Verified `committer.timestamp().format("%s")` on jj 0.44 |
