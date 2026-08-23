@@ -12,6 +12,11 @@ crossterm = "0.28"
 ratatui = "0.29"
 regex = "1.11"
 
+[profile.release]
+strip = true
+lto = "fat"
+codegen-units = 1
+
 [lints.rust]
 unsafe_code = "forbid"
 
