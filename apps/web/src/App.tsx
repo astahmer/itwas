@@ -1,27 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type InputHTMLAttributes } from "react";
-// NOTE: kumo-ui's published bundle embeds its own React, which crashes hooks
-// ("Cannot read properties of null (reading 'useState')") when mixed with ours.
-// We therefore reuse only its stylesheet and render the equivalent markup
-// (.button/.primary/.secondary/.input/.label/.spinner-small classes) ourselves.
+import { useEffect, useMemo, useRef, useState } from "react";
+// NOTE: kumo-ui's published bundle embeds its own React (crashes hooks when
+// mixed with ours), so we reuse only its stylesheet + classnames
+// (.button/.primary/.secondary/.input/.label/.error).
 import "kumo-ui/styles.css";
+import { PatchDiff } from "@pierre/diffs/react";
 import "./app.css";
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="field-wrapper">
-      <span className="label">{label}</span>
-      {children}
-    </div>
-  );
-}
-
-function TextField(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <input className="input" {...props} />;
-}
-
-function Loader() {
-  return <div className="loader-small"><div className="spinner-small" /></div>;
-}
 
 type Mode = "metadata" | "changes" | "snapshot";
 type MatchMode = "literal" | "regex" | "fuzzy";
@@ -39,17 +22,17 @@ interface SearchResult {
   line: number | null;
 }
 
+interface SearchResponse {
+  truncated: boolean;
+  matches: number;
+  results: SearchResult[];
+}
+
 interface RelatedChange {
   relation: "parent" | "child";
   change_id: string;
   timestamp: number | null;
   title: string;
-}
-
-interface SearchResponse {
-  truncated: boolean;
-  matches: number;
-  results: SearchResult[];
 }
 
 const LANES: Mode[] = ["metadata", "changes", "snapshot"];
@@ -67,22 +50,23 @@ function hashHue(text: string): number {
 
 function relative(timestamp: number): string {
   const delta = Date.now() / 1000 - timestamp;
-  const units: [number, string][] = [
-    [60, "just now"],
-    [3600, "minute"],
-    [86400, "hour"],
-    [604800, "day"],
-    [2592000, "week"],
-    [31536000, "month"],
-  ];
   if (delta < 0) return "in the future";
   if (delta < 60) return "just now";
-  if (delta < 3600) return `${Math.floor(delta / 60)} minute(s) ago`;
-  if (delta < 86400) return `${Math.floor(delta / 3600)} hour(s) ago`;
-  if (delta < 604800) return `${Math.floor(delta / 86400)} day(s) ago`;
-  if (delta < 2592000) return `${Math.floor(delta / 604800)} week(s) ago`;
-  if (delta < 31536000) return `${Math.floor(delta / 2592000)} month(s) ago`;
-  return `${Math.floor(delta / 31536000)} year(s) ago`;
+  const units: [number, string][] = [
+    [60, "minute"],
+    [3600, "hour"],
+    [86400, "day"],
+    [604800, "week"],
+    [2592000, "month"],
+    [31536000, "year"],
+  ];
+  let last = units[0];
+  for (const unit of units) {
+    if (delta < unit[0]) break;
+    last = unit;
+  }
+  const count = Math.floor(delta / last[0]);
+  return `${count} ${last[1]}${count === 1 ? "" : "s"} ago`;
 }
 
 function absolute(timestamp: number): string {
@@ -91,41 +75,43 @@ function absolute(timestamp: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function Related({ commit }: { commit: string }) {
-  const [related, setRelated] = useState<RelatedChange[] | null>(null);
-  useEffect(() => {
-    let alive = true;
-    fetch(`/api/related?commit=${encodeURIComponent(commit)}`)
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.statusText))))
-      .then((body) => alive && setRelated(body))
-      .catch(() => alive && setRelated([]));
-    return () => {
-      alive = false;
-    };
-  }, [commit]);
-  if (related === null) return <Loader />;
-  if (related.length === 0) return null;
+function ChangeId({ value }: { value: string }) {
   return (
-    <div>
-      {related.map((change) => (
-        <div key={change.relation + change.change_id} className="related-row">
-          <span className={`relation ${change.relation}`}>
-            [{change.relation}]
-          </span>
-          <span
-            className="change-id"
-            style={{ color: `hsl(${hashHue(change.change_id)}, 85%, 62%)` }}
-          >
-            {change.change_id}
-          </span>
-          {change.timestamp !== null && (
-            <span className="date">{relative(change.timestamp)}</span>
-          )}
-          <span>{change.title}</span>
-        </div>
-      ))}
-    </div>
+    <span className="change-id" style={{ color: `hsl(${hashHue(value)}, 85%, 62%)` }}>
+      {value}
+    </span>
   );
+}
+
+/** Filter diff lines to matches, keeping the hunk header above each run. */
+function filterPatch(patch: string, filter: string): string[] {
+  const lowered = filter.trim().toLowerCase();
+  const lines = patch.split("\n");
+  if (!lowered) return lines;
+  const kept: string[] = [];
+  let pendingHunk: string | null = null;
+  for (const line of lines) {
+    if (line.startsWith("@@")) {
+      pendingHunk = line;
+      continue;
+    }
+    if (line.toLowerCase().includes(lowered)) {
+      if (pendingHunk !== null) {
+        kept.push(pendingHunk);
+        pendingHunk = null;
+      }
+      kept.push(line);
+    }
+  }
+  return kept;
+}
+
+/** Split a multi-file git patch into single-file patches (PatchDiff needs 1). */
+function splitPatch(patch: string): string[] {
+  return patch
+    .split(/(?=^diff --git )/m)
+    .map((section) => section.replace(/\n$/, ""))
+    .filter((section) => section.startsWith("diff --git "));
 }
 
 function Diff({ commit }: { commit: string }) {
@@ -146,48 +132,73 @@ function Diff({ commit }: { commit: string }) {
     };
   }, [commit]);
   if (error) return <div className="error">{error}</div>;
-  if (diff === null) return <Loader />;
+  if (diff === null) return <div className="spinner-small" />;
+
   const lowered = filter.trim().toLowerCase();
-  const lines = diff.split("\n").filter(
-    (line) =>
-      !lowered ||
-      line.toLowerCase().includes(lowered),
-  );
+  const files = splitPatch(diff);
+  // Pierre renders full patches natively; the fallback list serves filtering.
+  if (!lowered) {
+    return (
+      <>
+        {files.map((filePatch, index) => (
+          <PatchDiff
+            key={index}
+            patch={filePatch}
+            disableWorkerPool
+            options={{ theme: "pierre-dark" }}
+          />
+        ))}
+      </>
+    );
+  }
+  const lines = filterPatch(diff, filter);
   return (
     <>
-      <TextField
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder="find within this diff…"
-      />
-      <pre className="diff">
-        {lines.length === 0 ? (
-          <span className="date">no lines match '{filter}'</span>
-        ) : (
-          lines.map((line, i) => (
-            <div
-              key={i}
-              className={
-                line.startsWith("+") && !line.startsWith("+++")
-                  ? "add"
-                  : line.startsWith("-") && !line.startsWith("---")
-                    ? "del"
-                    : line.startsWith("@@")
-                      ? "hunk"
-                      : undefined
-              }
-            >
-              {line || " "}
-            </div>
-          ))
-        )}
+      <input className="input" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      <pre className="fallback-diff">
+        {lines.map((line, i) => (
+          <div key={i}>{line || " "}</div>
+        ))}
       </pre>
     </>
   );
 }
 
-const VALID_MODES: Mode[] = ["metadata", "changes", "snapshot"];
-const VALID_MATCHES: MatchMode[] = ["literal", "regex", "fuzzy"];
+function Related({ commit }: { commit: string }) {
+  const [related, setRelated] = useState<RelatedChange[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/related?commit=${encodeURIComponent(commit)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.statusText))))
+      .then((body) => alive && setRelated(body))
+      .catch(() => alive && setRelated([]));
+    return () => {
+      alive = false;
+    };
+  }, [commit]);
+  if (related === null || related.length === 0) return null;
+  return (
+    <table className="related">
+      <tbody>
+        {related.map((change) => (
+          <tr key={change.relation + change.change_id}>
+            <td className={`relation ${change.relation}`}>[{change.relation}]</td>
+            <td>
+              <ChangeId value={change.change_id} />
+            </td>
+            <td className="date">
+              {change.timestamp !== null ? relative(change.timestamp) : ""}
+            </td>
+            <td>{change.title}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+const VALID_MODES: Mode[] = LANES;
+const VALID_MATCHES: MatchMode[] = MATCH_MODES;
 
 /** Initial filter state from the URL so ?q=…&revset=… links are shareable. */
 function stateFromUrl(): {
@@ -214,6 +225,30 @@ function stateFromUrl(): {
   };
 }
 
+function Segmented<T extends string>({
+  values,
+  value,
+  onChange,
+}: {
+  values: readonly T[];
+  value: T;
+  onChange: (next: T) => void;
+}) {
+  return (
+    <span className="segmented">
+      {values.map((candidate) => (
+        <button
+          key={candidate}
+          className={`button ${candidate === value ? "primary" : "secondary"}`}
+          onClick={() => onChange(candidate)}
+        >
+          {candidate}
+        </button>
+      ))}
+    </span>
+  );
+}
+
 export default function App() {
   const [initial] = useState(stateFromUrl);
   const [query, setQuery] = useState(initial.query);
@@ -232,16 +267,15 @@ export default function App() {
 
   const params = useMemo(() => {
     const p = new URLSearchParams();
-    p.set("query", query);
-    p.set("mode", mode);
-    p.set("match", matchMode);
-    p.set("limit", String(limit));
+    if (query.trim()) p.set("q", query.trim());
+    if (mode !== "metadata") p.set("mode", mode);
+    if (matchMode !== "literal") p.set("match", matchMode);
     if (revset.trim()) p.set("revset", revset.trim());
     if (path.trim()) p.set("path", path.trim());
-    if (after.trim()) p.set("since", after.trim());
+    if (after.trim()) p.set("after", after.trim());
     if (until.trim()) p.set("until", until.trim());
     return p.toString();
-  }, [query, revset, path, after, until, mode, matchMode, limit]);
+  }, [query, revset, path, after, until, mode, matchMode]);
 
   // Keep the address bar in sync so any search is a shareable permalink.
   useEffect(() => {
@@ -254,7 +288,7 @@ export default function App() {
   useEffect(() => {
     window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      fetch(`/api/search?${params}`)
+      fetch(`/api/search?${params}${params ? "&" : ""}limit=${limit}`)
         .then(async (r) => {
           const body = await r.json();
           if (!r.ok) throw new Error(body.error ?? r.statusText);
@@ -267,7 +301,7 @@ export default function App() {
         .catch((e) => setError(String(e)));
     }, 150);
     return () => window.clearTimeout(debounceRef.current);
-  }, [params]);
+  }, [params, limit]);
 
   // Batch-fetch diff stats for visible results.
   useEffect(() => {
@@ -303,110 +337,146 @@ export default function App() {
       </header>
 
       <section className="controls">
-        <Field label="query">
-          <TextField value={query} onChange={(e) => setQuery(e.target.value)} placeholder="type to search" autoFocus />
-        </Field>
-        <Field label="revset">
-          <TextField value={revset} onChange={(e) => setRevset(e.target.value)} placeholder="all()" />
-        </Field>
-        <Field label="path">
-          <TextField value={path} onChange={(e) => setPath(e.target.value)} placeholder="any" />
-        </Field>
-        <Field label="after">
-          <TextField value={after} onChange={(e) => setAfter(e.target.value)} placeholder={DATE_HINT} />
-        </Field>
-        <Field label="until">
-          <TextField value={until} onChange={(e) => setUntil(e.target.value)} />
-        </Field>
-        <div className="toggles">
-          <div className="segmented">
-            {LANES.map((lane) => (
-              <button key={lane} className={lane === mode ? "active" : ""} onClick={() => setMode(lane)}>
-                {lane}
-              </button>
-            ))}
-          </div>
-          <div className="segmented">
-            {MATCH_MODES.map((m) => (
-              <button key={m} className={m === matchMode ? "active" : ""} onClick={() => setMatchMode(m)}>
-                {m}
-              </button>
-            ))}
-          </div>
-        </div>
+        <label>
+          <span className="label">query</span>
+          <input
+            className="input"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="type to search"
+            autoFocus
+          />
+        </label>
+        <label>
+          <span className="label">revset</span>
+          <input
+            className="input"
+            value={revset}
+            onChange={(e) => setRevset(e.target.value)}
+            placeholder="all()"
+          />
+        </label>
+        <label>
+          <span className="label">path</span>
+          <input
+            className="input"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            placeholder="any"
+          />
+        </label>
+        <label>
+          <span className="label">after</span>
+          <input
+            className="input"
+            value={after}
+            onChange={(e) => setAfter(e.target.value)}
+            placeholder={DATE_HINT}
+          />
+        </label>
+        <label>
+          <span className="label">until</span>
+          <input
+            className="input"
+            value={until}
+            onChange={(e) => setUntil(e.target.value)}
+          />
+        </label>
+        <Segmented values={LANES} value={mode} onChange={setMode} />
+        <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
       </section>
 
       {error && <div className="error banner">{error}</div>}
 
       <main>
-        <ul className="results">
-          {(data?.results ?? []).map((result, index) => {
-            const stat = stats[result.commit_id];
-            return (
-              <li
-                key={result.commit_id + result.title + index}
-                className={index === selected ? "selected" : ""}
-                onClick={() => setSelected(index)}
-              >
-                <span className="marker">{index === selected ? "›" : ""}</span>
-                <span className="change-id" style={{ color: `hsl(${hashHue(result.change_id)}, 85%, 62%)` }}>
-                  {result.change_id}
-                </span>
-                {result.bookmarks.map((b) => (
-                  <span key={b} className={`bookmark ${["main", "master", "trunk"].includes(b) ? "primary" : ""}`}>
-                    {b}
-                  </span>
-                ))}
-                {result.tags.map((t) => (
-                  <span key={t} className="tag">tag:{t}</span>
-                ))}
-                {result.timestamp !== null && (
-                  <span className="date">{relative(result.timestamp)}</span>
-                )}
-                {stat && (stat.added > 0 || stat.removed > 0) && (
-                  <span className="stat">
-                    <span className="added">+{stat.added}</span>{" "}
-                    <span className="removed">−{stat.removed}</span>
-                  </span>
-                )}
-                {result.file && (
-                  <span className="file">
-                    {result.file}
-                    {result.line !== null ? `:${result.line}` : ""}
-                  </span>
-                )}
-                <span className="title">{result.title}</span>
-              </li>
-            );
-          })}
-        </ul>
+        <table className="results">
+          <thead>
+            <tr>
+              <th />
+              <th>change</th>
+              <th>refs</th>
+              <th>date</th>
+              <th>stats</th>
+              <th>file</th>
+              <th>title</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(data?.results ?? []).map((result, index) => {
+              const stat = stats[result.commit_id];
+              return (
+                <tr
+                  key={result.commit_id + result.title + index}
+                  className={index === selected ? "selected" : ""}
+                  onClick={() => setSelected(index)}
+                >
+                  <td className="marker">{index === selected ? "›" : ""}</td>
+                  <td>
+                    <ChangeId value={result.change_id} />
+                  </td>
+                  <td className="refs">
+                    {result.bookmarks.map((b) => (
+                      <span key={b} className={`bookmark ${["main", "master", "trunk"].includes(b) ? "primary-ref" : ""}`}>
+                        {b}
+                      </span>
+                    ))}
+                    {result.tags.map((t) => (
+                      <span key={t} className="tag-ref">tag:{t}</span>
+                    ))}
+                  </td>
+                  <td className="date">
+                    {result.timestamp !== null ? relative(result.timestamp) : ""}
+                  </td>
+                  <td className="stat">
+                    {stat && (stat.added > 0 || stat.removed > 0) ? (
+                      <>
+                        <span className="added">+{stat.added}</span>{" "}
+                        <span className="removed">−{stat.removed}</span>
+                      </>
+                    ) : null}
+                  </td>
+                  <td className="file">
+                    {result.file
+                      ? `${result.file}${result.line !== null ? `:${result.line}` : ""}`
+                      : ""}
+                  </td>
+                  <td className="title">{result.title}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
 
         {selectedResult && (
           <aside className="detail">
             <div className="detail-head">
-              <span className="change-id" style={{ color: `hsl(${hashHue(selectedResult.change_id)}, 85%, 62%)` }}>
-                {selectedResult.change_id}
-              </span>
+              <ChangeId value={selectedResult.change_id} />
               <button
                 className="button secondary"
-                onClick={() => navigator.clipboard?.writeText(selectedResult.change_id)}
+                onClick={() =>
+                  navigator.clipboard?.writeText(selectedResult.change_id)
+                }
               >
                 copy id
               </button>
               <button
                 className="button secondary"
                 onClick={() =>
-                  navigator.clipboard?.writeText(`jj new ${selectedResult.change_id}`)
+                  navigator.clipboard?.writeText(
+                    `jj new ${selectedResult.change_id}`,
+                  )
                 }
               >
                 copy jj new
               </button>
-              {selectedResult.author && <span className="author">{selectedResult.author}</span>}
+              {selectedResult.author && (
+                <span className="author">{selectedResult.author}</span>
+              )}
               {selectedResult.timestamp !== null && (
                 <span className="date">{absolute(selectedResult.timestamp)}</span>
               )}
             </div>
-            {selectedResult.detail.split("\n").slice(1).length > 0 && (
+            {selectedResult.detail.split("\n").slice(1).join("\n").trim() && (
               <p className="description">
                 {selectedResult.detail.split("\n").slice(1).join("\n")}
               </p>

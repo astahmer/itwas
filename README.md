@@ -146,10 +146,13 @@ itwas web                    # http://127.0.0.1:7878
 itwas web -p 9000 -R ~/dev/somerepo
 ```
 
-The frontend is a pre-built Vite + React app using
-[kumo-ui](https://kumo-ui.com), embedded into the binary at compile time. Every
-CLI capability is available: all three lanes, revset/path/date scoping, match
-modes, diffstats, and full diffs of the selected revision. Rebuild it with:
+Opens your browser automatically. The frontend is a pre-built Vite + React app:
+[kumo-ui](https://kumo-ui.com) for controls and
+[@pierre/diffs](https://github.com/pierrecomputer/pierre) (Shiki-powered) for
+diff rendering, embedded into the binary at compile time. Every CLI capability
+is available: all three lanes, revset/path/date scoping, match modes,
+diffstats, related changes, find-within-diff, and shareable search permalinks
+(the URL always reflects the current filters). Rebuild it with:
 
 ```sh
 cd apps/web && npm install && npm run build   # outputs to assets/web/

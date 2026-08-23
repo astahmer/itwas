@@ -5,6 +5,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
+    process::Command,
 };
 
 use anyhow::{Context as _, Result};
@@ -41,8 +42,10 @@ pub fn run(repository: Option<PathBuf>, port: impl Into<Option<u16>>) -> Result<
     let port = port.into().unwrap_or(DEFAULT_PORT);
     let listener = TcpListener::bind(("127.0.0.1", port))
         .with_context(|| format!("could not bind 127.0.0.1:{port}"))?;
-    println!("itwas web serving on http://127.0.0.1:{port}");
+    let url = format!("http://127.0.0.1:{port}");
+    println!("itwas web serving on {url}");
     println!("Ctrl-C to stop");
+    open_browser(&url);
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -57,6 +60,21 @@ pub fn run(repository: Option<PathBuf>, port: impl Into<Option<u16>>) -> Result<
         }
     }
     Ok(())
+}
+
+/// Best-effort launch of the system browser.
+#[allow(unused_variables)]
+fn open_browser(url: &str) {
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result =
+        Command::new("xdg-open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    #[cfg(windows)]
+    let result = Command::new("cmd").args(["/C", "start", url]).spawn();
+    if let Err(error) = result {
+        println!("could not open a browser ({error}); visit {url} manually");
+    }
 }
 
 fn handle_connection(stream: TcpStream, repository: Option<PathBuf>) -> Result<()> {
