@@ -829,12 +829,16 @@ fn render_input(frame: &mut ratatui::Frame, app: &App, area: Rect) {
 
 /// jj-style change-id section: the shortest unique prefix rendered bold in a
 /// single per-commit hue (derived from the id itself), not per-letter colors.
-fn change_id_span(change_id: &str) -> Span<'static> {
+fn change_id_hue(change_id: &str) -> f32 {
     let mut hash = 0_u32;
     for byte in change_id.bytes() {
         hash = hash.wrapping_mul(31).wrapping_add(u32::from(byte));
     }
-    let hue = f32::from((hash % 360 / 2) as u8 * 2);
+    f32::from((hash % 360 / 2) as u8 * 2)
+}
+
+fn change_id_span(change_id: &str) -> Span<'static> {
+    let hue = change_id_hue(change_id);
     Span::styled(
         change_id.to_owned(),
         Style::default()
@@ -894,7 +898,12 @@ fn render_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 ),
                 Span::raw(" "),
             ];
-            spans.push(change_id_span(&result.change_id));
+            // Fixed-width change id keeps the following columns aligned.
+            spans.push(Span::styled(
+                format!("{:<8}", result.change_id),
+                Style::default().fg(hsl_color(change_id_hue(&result.change_id), 0.85, 0.62))
+                    .add_modifier(Modifier::BOLD),
+            ));
             spans.push(Span::raw(" "));
             for bookmark in &result.bookmarks {
                 let color = if matches!(bookmark.as_str(), "main" | "master" | "trunk") {
@@ -914,8 +923,9 @@ fn render_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 ));
             }
             if let Some(timestamp) = result.timestamp {
+                // Fixed-width keeps the age and stats columns aligned.
                 spans.push(Span::styled(
-                    format!("  {}", dates::relative(timestamp)),
+                    format!("  {:<14}", dates::relative(timestamp)),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
@@ -923,11 +933,11 @@ fn render_results(frame: &mut ratatui::Frame, app: &App, area: Rect) {
                 && !stat.is_empty()
             {
                 spans.push(Span::styled(
-                    format!("  +{}", stat.added),
+                    format!("  +{:<5}", stat.added),
                     Style::default().fg(Color::LightGreen),
                 ));
                 spans.push(Span::styled(
-                    format!(" −{}", stat.removed),
+                    format!(" −{:<5}", stat.removed),
                     Style::default().fg(Color::LightRed),
                 ));
             }

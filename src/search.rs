@@ -127,7 +127,15 @@ impl SearchResult {
         let location = self.file.as_ref().map_or_else(String::new, |file| {
             format!(" {file}{}", self.line.map_or_else(String::new, |l| format!(":{l}")))
         });
-        let mut line = format!("{} {}{} {}", self.commit_id, self.change_id, location, self.title);
+        // Fixed-width columns keep rows aligned regardless of content length.
+        let short_commit = self.commit_id.get(..7).unwrap_or(&self.commit_id);
+        let mut line = format!(
+            "{:<7} {:<6}{} {}",
+            short_commit,
+            self.change_id,
+            location,
+            self.title
+        );
         if !labels.is_empty() {
             line.push_str("  [");
             line.push_str(&labels.join(", "));

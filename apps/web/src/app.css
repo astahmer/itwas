@@ -230,3 +230,20 @@ main [data-scope="splitter"][data-part="panel"] > .results-scroll {
   border: 1px solid var(--border);
 }
 .trigger-button:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Filter bar layout: query on top, match modes under it, filters in a row */
+.query-row .input, .query-row input { width: 100%; min-width: 260px; }
+.match-row { display: flex; }
+.filters-row { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+
+/* Row actions live in their own reserved column */
+.row-actions-head { width: 120px; }
+td.row-actions-cell { white-space: nowrap; }
+.row-actions { display: inline-flex; gap: 6px; opacity: 0.75; }
+tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
+
+.resizing-note {
+  color: var(--text-muted);
+  padding: 20px;
+  text-align: center;
+}

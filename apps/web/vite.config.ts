@@ -25,5 +25,13 @@ export default defineConfig({
   build: {
     outDir: "../../assets/web",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // Stable names: content-hashed files made noisy jj diffs on every build.
+        entryFileNames: "assets/index.js",
+        chunkFileNames: "assets/[name].js",
+        assetFileNames: "assets/[name][extname]",
+      },
+    },
   },
 });

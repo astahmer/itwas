@@ -11,7 +11,6 @@ import {
   Autocomplete,
   Badge,
   Button,
-  ClipboardText,
   DatePicker,
   Empty,
   Field,
@@ -79,7 +78,7 @@ const REVSET_CHEATSHEET: [string, string][] = [
   ["conflicts()", "revisions with merge conflicts"],
 ];
 
-const SORTABLE_COLUMNS: SortKey[] = ["change", "date", "stats", "title"];
+const SORTABLE_COLUMNS: SortKey[] = ["change", "date", "stats"];
 const ROW_HEIGHT = 28;
 const WINDOW_OVERSCAN = 10;
 
@@ -231,6 +230,8 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
               overflow: "wrap",
               // Bars are quieter than the default hatched blank-line markers.
               diffIndicators: "bars",
+              // Keep the filename header pinned while scrolling a file.
+              stickyHeader: true,
             }}
           />
         ))}
@@ -457,6 +458,8 @@ export default function App() {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   // Virtualization.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // While the splitter is being dragged we pause heavy diff rendering.
+  const [resizing, setResizing] = useState(false);
   const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(600);
@@ -750,7 +753,7 @@ export default function App() {
       </header>
 
       <section className="controls">
-        <div onKeyDown={onFilterKeyDown}>
+        <div className="query-row" onKeyDown={onFilterKeyDown}>
           <Input
             label="query"
             value={query}
@@ -760,7 +763,10 @@ export default function App() {
             autoFocus
           />
         </div>
-        <div onKeyDown={onFilterKeyDown}>
+        <div className="match-row">
+          <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
+        </div>
+        <div className="filters-row" onKeyDown={onFilterKeyDown}>
         <Autocomplete
           items={REVSET_PRESETS}
           value={revset}
@@ -778,7 +784,6 @@ export default function App() {
             </Autocomplete.List>
           </Autocomplete.Content>
         </Autocomplete>
-        </div>
         <div onKeyDown={onFilterKeyDown}>
           <Input
             label="path"
@@ -810,8 +815,8 @@ export default function App() {
             <DateAddon onPick={setUntil} />
           </div>
         </Field>
-        <Segmented values={LANES} value={mode} onChange={setMode} />
-        <Popover>
+          <Segmented values={LANES} value={mode} onChange={setMode} />
+          <Popover>
           <Popover.Trigger
         className="trigger-button"
         aria-label="what do the lanes mean?"
@@ -871,13 +876,21 @@ export default function App() {
             )}
           </Popover.Content>
         </Popover>
-        <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
+        </div>
       </section>
 
       {error && <div className="error banner">{error}</div>}
 
       <main>
       <Splitter.Root
+        onResizeStart={() => setResizing(true)}
+        onResizeEnd={(details) => {
+          setResizing(false);
+          window.localStorage.setItem(
+            "itwas-splitter",
+            JSON.stringify(details.size),
+          );
+        }}
         panels={[{ id: "list", minSize: 25 }, { id: "detail", minSize: 25 }]}
         defaultValue={useMemo(() => {
           try {
@@ -886,12 +899,6 @@ export default function App() {
           } catch {}
           return ["55", "45"];
         }, [])}
-        onResizeEnd={(details) =>
-          window.localStorage.setItem(
-            "itwas-splitter",
-            JSON.stringify(details.size),
-          )
-        }
       >
       <Splitter.Panel id="list">
         <div
@@ -971,9 +978,27 @@ export default function App() {
                   </span>
                 </th>
               )}
-              <th className="title">
-                <span className="th-inner">title</span>
+              <th className="title" aria-sort={sort?.key === "title" ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"}>
+                <span className="th-inner">
+                  <button
+                    className="th-sort"
+                    data-testid="sort-title"
+                    onClick={() => toggleSort("title")}
+                    title="sort by title"
+                  >
+                    title
+                    {sort?.key === "title" ? (sort!.dir === "asc" ? " ▲" : " ▼") : ""}
+                  </button>
+                  <span
+                    className="resize-handle"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="resize title column"
+                    onMouseDown={(e) => startResize("title", e)}
+                  />
+                </span>
               </th>
+              <th className="row-actions-head" aria-label="actions" />
             </tr>
           </thead>
           <tbody ref={tableRef}>
@@ -1106,6 +1131,8 @@ export default function App() {
                   )}
                   <td className="title" title={result.title}>
                     {result.title || <span className="date">(no description)</span>}
+                  </td>
+                  <td className="row-actions-cell">
                     <span className="row-actions">
                       <button
                         className="row-action"
@@ -1150,9 +1177,18 @@ export default function App() {
         )}
         {selectedResult && (
           <aside className="detail">
+            {resizing ? (
+              <div className="resizing-note">rendering paused while resizing…</div>
+            ) : (
+            <>
             <div className="detail-head">
               <ChangeId value={selectedResult.change_id} />
-              <ClipboardText size="sm" text={selectedResult.change_id} />
+              <Button variant="ghost" size="sm" onClick={() => navigator.clipboard?.writeText(selectedResult.change_id)}>
+                copy id
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => navigator.clipboard?.writeText(`jj new ${selectedResult.change_id}`)}>
+                copy jj new
+              </Button>
               {selectedResult.author && (
                 <span className="author">{selectedResult.author}</span>
               )}
@@ -1167,6 +1203,8 @@ export default function App() {
             )}
             <Related commit={selectedResult.commit_id} />
             <Diff commit={selectedResult.commit_id} theme={theme} />
+          </>
+            )}
           </aside>
         )}
       </Splitter.Panel>
