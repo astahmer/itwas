@@ -185,6 +185,8 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const [forceFlat, setForceFlat] = useState(false);
+  // "try rich view anyway" overrides the size cutoff for this commit.
+  const [forceRich, setForceRich] = useState(false);
   useEffect(() => {
     let alive = true;
     setDiff(null);
@@ -210,7 +212,7 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   const maxDiffChars = Number.isFinite(maxDiffParam) && maxDiffParam > 0 ? maxDiffParam : 600_000;
   const diffLineCount = diff.split("\n").length;
   const tooBig = diff.length > maxDiffChars || diffLineCount > 4000;
-  const useFlatView = forceFlat || tooBig;
+  const useFlatView = (tooBig && !forceRich) || forceFlat;
 
   const lowered = filter.trim().toLowerCase();
   const files = splitPatch(diff);
@@ -238,11 +240,16 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   const lines = filterPatch(diff, filter);
   return (
     <>
-      {tooBig && !filter.trim() && (
-        <div className="large-diff-notice">
+      {tooBig && !filter.trim() && !forceRich && (
+        <div className="large-diff-notice" data-testid="cutoff-notice">
           Large diff: {(diff.length / 1024).toFixed(0)} KB,{" "}
           {diffLineCount.toLocaleString()} lines — rendered as plain text.{" "}
-          <Button variant="outline" size="sm" onClick={() => setForceFlat(false)}>
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="rich-view"
+            onClick={() => setForceRich(true)}
+          >
             try rich view anyway
           </Button>
         </div>
@@ -481,21 +488,27 @@ export default function App() {
     if (!sort) return fetched;
     const dir = sort.dir === "asc" ? 1 : -1;
     const cmp = (a: SearchResult, b: SearchResult): number => {
-      switch (sort.key) {
-        case "change":
-          return a.change_id.localeCompare(b.change_id);
-        case "date":
-          return (a.timestamp ?? Number.NEGATIVE_INFINITY) - (b.timestamp ?? Number.NEGATIVE_INFINITY);
-        case "stats": {
-          const sa = stats[a.commit_id];
-          const sb = stats[b.commit_id];
-          const va = sa ? sa.added + sa.removed : -1;
-          const vb = sb ? sb.added + sb.removed : -1;
-          return va - vb;
+      const base = (() => {
+        switch (sort.key) {
+          case "change":
+            return a.change_id.localeCompare(b.change_id);
+          case "date":
+            return (
+              (a.timestamp ?? Number.NEGATIVE_INFINITY) -
+              (b.timestamp ?? Number.NEGATIVE_INFINITY)
+            );
+          case "stats": {
+            const sa = stats[a.commit_id];
+            const sb = stats[b.commit_id];
+            const va = sa ? sa.added + sa.removed : -1;
+            const vb = sb ? sb.added + sb.removed : -1;
+            return va - vb;
+          }
+          case "title":
+            return a.title.localeCompare(b.title);
         }
-        case "title":
-          return a.title.localeCompare(b.title);
-      }
+      })();
+      return base * dir;
     };
     return [...fetched].sort(cmp) as SearchResult[];
   }, [fetched, sort, stats]);
@@ -530,8 +543,11 @@ export default function App() {
     return flat;
   }, [mode, results, expandedGroups]);
 
-  const toggleGroup = useCallback((key: string) => {
-    setExpandedGroups((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
+  // `current` is the group's effective expanded state at click time —
+  // groups expanded by the index-0 default are not present in the map, so
+  // the toggle must invert what is rendered, not the raw map entry.
+  const toggleGroup = useCallback((key: string, current: boolean) => {
+    setExpandedGroups((prev) => ({ ...prev, [key]: !current }));
   }, []);
 
   const moveSelection = useCallback(
@@ -815,6 +831,7 @@ export default function App() {
               <Button
                 variant={helpTab === "revsets" ? "primary" : "ghost"}
                 size="sm"
+                data-testid="tab-revsets"
                 onClick={() => setHelpTab("revsets")}
               >
                 Revsets
@@ -839,6 +856,7 @@ export default function App() {
                       <td>
                         <button
                           className="cheatsheet-token"
+                          data-testid="cheatsheet-token"
                           title={`insert into revset field`}
                           onClick={() => insertRevset(token)}
                         >
@@ -878,6 +896,7 @@ export default function App() {
       <Splitter.Panel id="list">
         <div
           className="results-scroll"
+          data-testid="results-scroll"
           ref={scrollRef}
           onScroll={onResultsScroll}
         >
@@ -908,6 +927,7 @@ export default function App() {
                     <span className="th-inner">
                       <button
                         className="th-sort"
+                        data-testid={`sort-${key}`}
                         onClick={() => toggleSort(key)}
                         title={`sort by ${label}`}
                       >
@@ -969,17 +989,18 @@ export default function App() {
                 return (
                   <tr
                     key={"g:" + row.key}
+                    data-testid="group-header"
                     tabIndex={0}
                     ref={(el) => {
                       if (el) rowRefs.current.set(index, el);
                       else rowRefs.current.delete(index);
                     }}
                     className="group-header"
-                    onClick={() => toggleGroup(row.key)}
+                    onClick={() => toggleGroup(row.key, expanded)}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
-                        toggleGroup(row.key);
+                        toggleGroup(row.key, expanded);
                       }
                     }}
                   >
@@ -992,7 +1013,9 @@ export default function App() {
                       {row.rep.timestamp !== null ? relative(row.rep.timestamp) : ""}
                     </td>
                     <td className="stat">
-                      <Badge variant="secondary">{row.count} matches</Badge>
+                      <span data-testid="group-count">
+                        <Badge variant="secondary">{row.count} matches</Badge>
+                      </span>
                     </td>
                     {showFileColumn && <td className="file" />}
                     <td className="title" title={row.rep.title}>
@@ -1007,6 +1030,10 @@ export default function App() {
                 <tr
                   key={result.commit_id + result.title + index}
                   tabIndex={0}
+                  ref={(el) => {
+                    if (el) rowRefs.current.set(index, el);
+                    else rowRefs.current.delete(index);
+                  }}
                   aria-selected={index === selected}
                   className={`${index === selected ? "selected" : ""}${mode === "changes" ? " line-row" : ""}`}
                   onClick={() => setSelected(index)}
