@@ -6,7 +6,7 @@ import {
   useState,
 } from "react";
 import { Splitter } from "@ark-ui/react";
-import "@cloudflare/kumo/styles/standalone";
+import "./kumo/styles/kumo-standalone.css";
 import {
   Autocomplete,
   Badge,
@@ -18,7 +18,7 @@ import {
   Input,
   Loader,
   Popover,
-} from "@cloudflare/kumo";
+} from "./kumo";
 import { PatchDiff } from "@pierre/diffs/react";
 import "./app.css";
 
@@ -207,7 +207,7 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
     <>
       <Input
         value={filter}
-        onChange={(e) => setFilter(e.target.value)}
+        onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilter(e.target.value)}
         aria-label="find within diff"
         placeholder="find within this diff…"
         autoFocus
@@ -517,7 +517,7 @@ export default function App() {
           <Input
             label="query"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
             aria-label="query"
             placeholder="type to search"
             autoFocus
@@ -527,7 +527,7 @@ export default function App() {
         <Autocomplete
           items={REVSET_PRESETS}
           value={revset}
-          onValueChange={(value) => setRevset(String(value ?? ""))}
+          onValueChange={(value: unknown) => setRevset(String(value ?? ""))}
           label="revset"
         >
           <Autocomplete.InputGroup placeholder="all()" />
@@ -546,7 +546,7 @@ export default function App() {
           <Input
             label="path"
             value={path}
-            onChange={(e) => setPath(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setPath(e.target.value)}
             aria-label="path filter"
             placeholder="any · glob:*.rs"
           />
@@ -555,7 +555,7 @@ export default function App() {
           <div className="field-row" onKeyDown={onFilterKeyDown}>
             <Input
               value={after}
-              onChange={(e) => setAfter(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setAfter(e.target.value)}
               aria-label="after date"
               placeholder={DATE_HINT_SHORT}
             />
@@ -566,7 +566,7 @@ export default function App() {
           <div className="field-row" onKeyDown={onFilterKeyDown}>
             <Input
               value={until}
-              onChange={(e) => setUntil(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setUntil(e.target.value)}
               aria-label="until date"
               placeholder={DATE_HINT_SHORT}
             />

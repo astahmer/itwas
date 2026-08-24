@@ -18,7 +18,10 @@
       "kumo-ui": [
         "./node_modules/kumo-ui/dist/index.d.ts"
       ]
-    }
+    },
+    "types": [
+      "node"
+    ]
   },
   "include": [
     "src"
