@@ -220,7 +220,8 @@ fn api_search(
 ) -> (u16, &'static str, Vec<u8>) {
     let get = |key: &str| param(params, key);
     let request = SearchRequest {
-        query: get("query").unwrap_or_default(),
+        // The UI sends "q"; keep accepting "query" for API compatibility.
+        query: get("q").or_else(|| get("query")).unwrap_or_default(),
         mode: get("mode").and_then(|value| value.parse().ok()).unwrap_or_default(),
         revset: get("revset").filter(|value| !value.is_empty()),
         path: get("path").filter(|value| !value.is_empty()),

@@ -53,12 +53,11 @@ main {
   gap: 10px; padding: 10px 14px; flex: 1; overflow: hidden;
 }
 
-/* Columnar alignment via real table layout */
-table.results {
-  width: 100%; border-collapse: collapse;
-  border: 1px solid var(--border); border-radius: 8px;
-  overflow-y: auto; display: block;
+/* Columnar alignment via real table layout; the wrapper scrolls */
+.results-scroll {
+  overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
 }
+table.results { width: 100%; border-collapse: collapse; }
 table.results th {
   position: sticky; top: 0; background: var(--surface);
   text-align: left; color: var(--text-muted); font-weight: 500;
@@ -69,9 +68,11 @@ table.results td {
   overflow: hidden; text-overflow: ellipsis; max-width: 320px;
 }
 table.results tbody tr { cursor: pointer; outline: none; }
+table.results tbody tr:nth-child(even) { background: color-mix(in srgb, var(--surface) 55%, transparent); }
 table.results tbody tr:hover,
 table.results tbody tr:focus-visible { background: var(--surface); }
 table.results tbody tr.selected { background: var(--surface-raised); }
+table.results td.title, table.results th.title { white-space: normal; min-width: 200px; }
 td.marker { width: 14px; color: var(--green); font-weight: 700; }
 .change-id { font-weight: 700; }
 .bookmark { color: var(--yellow); font-weight: 600; margin-right: 6px; }

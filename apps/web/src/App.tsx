@@ -5,12 +5,9 @@ import {
   useRef,
   useState,
 } from "react";
-// NOTE: kumo-ui's published bundle embeds its own React (crashing hooks when
-// mixed with ours) — we vendor equivalent components in ./kumo.tsx using
-// kumo-ui's stylesheet.
-import "kumo-ui/styles.css";
+import "@cloudflare/kumo/styles/standalone";
+import { Badge, Button, ClipboardText, Empty, Input, Loader } from "@cloudflare/kumo";
 import { PatchDiff } from "@pierre/diffs/react";
-import { Button, CopyButton, Field, Input, Loader } from "./kumo";
 import "./app.css";
 
 type Mode = "metadata" | "changes" | "snapshot";
@@ -45,7 +42,7 @@ interface RelatedChange {
 
 const LANES: Mode[] = ["metadata", "changes", "snapshot"];
 const MATCH_MODES: MatchMode[] = ["literal", "regex", "fuzzy"];
-const DATE_HINT_SHORT = "YYYY-MM-DD · 2d · today";
+const DATE_HINT_SHORT = "e.g. 2d · today";
 
 function hashHue(text: string): number {
   let hash = 0;
@@ -152,7 +149,13 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
             key={index}
             patch={filePatch}
             disableWorkerPool
-            options={{ theme: theme === "dark" ? "pierre-dark" : "pierre-light" }}
+            options={{
+              theme: theme === "dark" ? "pierre-dark" : "pierre-light",
+              // Wrap long lines instead of clipping them at the pane edge.
+              overflow: "wrap",
+              // Bars are quieter than the default hatched blank-line markers.
+              diffIndicators: "bars",
+            }}
           />
         ))}
       </>
@@ -223,8 +226,9 @@ function Segmented<T extends string>({
       {values.map((candidate) => (
         <Button
           key={candidate}
-          variant={candidate === value ? "primary" : "secondary"}
+          variant={candidate === value ? "primary" : "ghost"}
           aria-pressed={candidate === value}
+          size="sm"
           onClick={() => onChange(candidate)}
         >
           {candidate}
@@ -287,8 +291,9 @@ export default function App() {
   const debounceRef = useRef<number | undefined>(undefined);
   const tableRef = useRef<HTMLTableSectionElement | null>(null);
 
-  // Reflect the theme on <html> for CSS and persist it.
+  // Reflect the theme on <html>: data-mode drives Kumo, data-theme our vars.
   useEffect(() => {
+    document.documentElement.dataset.mode = theme;
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem("itwas-theme", theme);
   }, [theme]);
@@ -389,7 +394,8 @@ export default function App() {
         <span className="tagline">jj history search</span>
         <span className="count">{countLabel}</span>
         <Button
-          variant="third"
+          variant="outline"
+          size="sm"
           aria-label="toggle light/dark theme"
           title="toggle light/dark theme"
           onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -399,44 +405,29 @@ export default function App() {
       </header>
 
       <section className="controls">
-        <Field label="query">
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="type to search"
-            autoFocus
-          />
-        </Field>
-        <Field label="revset">
-          <Input
-            value={revset}
-            onChange={(e) => setRevset(e.target.value)}
-            placeholder="all()"
-          />
-        </Field>
-        <Field label="path">
-          <Input
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="any"
-          />
-        </Field>
-        <Field label="after">
-          <Input
-            value={after}
-            onChange={(e) => setAfter(e.target.value)}
-            placeholder={DATE_HINT_SHORT}
-            title={DATE_HINT_SHORT + " · yesterday · now"}
-          />
-        </Field>
-        <Field label="until">
-          <Input
-            value={until}
-            onChange={(e) => setUntil(e.target.value)}
-            placeholder={DATE_HINT_SHORT}
-            title={DATE_HINT_SHORT + " · yesterday · now (inclusive day)"}
-          />
-        </Field>
+        <Input
+          label="query"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="type to search"
+          autoFocus
+        />
+        <Input label="revset" value={revset} onChange={(e) => setRevset(e.target.value)} placeholder="all()" />
+        <Input label="path" value={path} onChange={(e) => setPath(e.target.value)} placeholder="any" />
+        <Input
+          label="after"
+          value={after}
+          onChange={(e) => setAfter(e.target.value)}
+          placeholder={DATE_HINT_SHORT}
+          title={DATE_HINT_SHORT + " · yesterday · now"}
+        />
+        <Input
+          label="until"
+          value={until}
+          onChange={(e) => setUntil(e.target.value)}
+          placeholder={DATE_HINT_SHORT}
+          title={DATE_HINT_SHORT + " · yesterday · now (inclusive day)"}
+        />
         <Segmented values={LANES} value={mode} onChange={setMode} />
         <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
       </section>
@@ -444,6 +435,7 @@ export default function App() {
       {error && <div className="error banner">{error}</div>}
 
       <main>
+        <div className="results-scroll">
         <table className="results">
           <thead>
             <tr>
@@ -453,7 +445,7 @@ export default function App() {
               <th>date</th>
               <th>stats</th>
               {showFileColumn && <th>file</th>}
-              <th>title</th>
+              <th className="title">title</th>
             </tr>
           </thead>
           <tbody ref={tableRef}>
@@ -489,15 +481,15 @@ export default function App() {
                   {showRefsColumn && (
                     <td className="refs">
                       {result.bookmarks.map((b) => (
-                        <span
+                        <Badge
                           key={b}
-                          className={`bookmark ${["main", "master", "trunk"].includes(b) ? "primary-ref" : ""}`}
+                          variant={["main", "master", "trunk"].includes(b) ? "success" : "warning"}
                         >
                           {b}
-                        </span>
+                        </Badge>
                       ))}
                       {result.tags.map((t) => (
-                        <span key={t} className="tag-ref">tag:{t}</span>
+                        <Badge key={t} variant="purple">tag:{t}</Badge>
                       ))}
                     </td>
                   )}
@@ -527,15 +519,16 @@ export default function App() {
             })}
           </tbody>
         </table>
+        </div>
+        {data !== null && results.length === 0 && !error && (
+          <Empty title="No matches" description="Try widening the revset or clearing filters." />
+        )}
 
         {selectedResult && (
           <aside className="detail">
             <div className="detail-head">
               <ChangeId value={selectedResult.change_id} />
-              <CopyButton value={selectedResult.change_id}>copy id</CopyButton>
-              <CopyButton value={`jj new ${selectedResult.change_id}`}>
-                copy jj new
-              </CopyButton>
+              <ClipboardText size="sm" text={selectedResult.change_id} />
               {selectedResult.author && (
                 <span className="author">{selectedResult.author}</span>
               )}
@@ -555,7 +548,7 @@ export default function App() {
       </main>
 
       <footer>
-        <Button variant="third" onClick={() => window.location.reload()}>
+        <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
           refresh
         </Button>
         <span>↑↓ navigate · everything the CLI does — no terminal required</span>
