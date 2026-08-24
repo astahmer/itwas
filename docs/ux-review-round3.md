@@ -36,3 +36,9 @@ the partial machine review with manual code/DOM inspection.
 3. Large-diff cutoff with "open raw diff" escape hatch
 4. Revset cheat-sheet inside the `?` popover
 5. Conflict badge via `if(conflict, …)` template
+
+## Round-3 addendum (2026-08-24, post-fix verification)
+
+All "fixed" rows verified via playwright e2e (10/10 green) + fresh screenshots.
+Splitter e2e gutter tolerance widened to 16px to match the designed resize
+handle width. Full deferred backlog remains in the table above.
