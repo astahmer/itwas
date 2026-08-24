@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "bddgen": "bddgen",
+    "e2e": "bddgen && playwright test"
   },
   "dependencies": {
     "@ark-ui/react": "^5.39.0",
@@ -16,10 +18,13 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@cucumber/cucumber": "^13.2.1",
+    "@playwright/test": "^1.62.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "jsdom": "^30.0.1",
+    "playwright-bdd": "^9.2.0",
     "typescript": "^5.6.3",
     "vite": "^6.0.3"
   }

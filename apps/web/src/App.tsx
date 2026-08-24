@@ -208,6 +208,7 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
       <Input
         value={filter}
         onChange={(e) => setFilter(e.target.value)}
+        aria-label="find within diff"
         placeholder="find within this diff…"
         autoFocus
       />
@@ -262,24 +263,27 @@ function DateAddon({
   const [picked, setPicked] = useState<Date | undefined>(undefined);
   return (
     <Popover>
-      <Popover.Trigger asChild>
-        <Button variant="ghost" size="sm" aria-label="pick a date" title="pick a date">
-          ▾
-        </Button>
+      <Popover.Trigger
+        className="trigger-button"
+        aria-label="pick a date"
+        title="pick a date"
+      >
+        ▾
       </Popover.Trigger>
       <Popover.Content align="end">
         <div className="date-presets">
           {DATE_PRESETS.map(([label, iso]) => (
-            <button
+            <Button
               key={label}
-              className="button secondary"
+              variant="secondary"
+              size="sm"
               onClick={() => {
                 onPick(iso);
                 setPicked(new Date(`${iso}T12:00:00`));
               }}
             >
               {label}
-            </button>
+            </Button>
           ))}
         </div>
         <DatePicker
@@ -509,13 +513,16 @@ export default function App() {
       </header>
 
       <section className="controls">
-        <Input
-          label="query"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="type to search"
-          autoFocus
-        />
+        <div onKeyDown={onFilterKeyDown}>
+          <Input
+            label="query"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="query"
+            placeholder="type to search"
+            autoFocus
+          />
+        </div>
         <div onKeyDown={onFilterKeyDown}>
         <Autocomplete
           items={REVSET_PRESETS}
@@ -535,30 +542,32 @@ export default function App() {
           </Autocomplete.Content>
         </Autocomplete>
         </div>
-        <Input
-          label="path"
-          value={path}
-          onChange={(e) => setPath(e.target.value)}
-          onKeyDown={onFilterKeyDown}
-          placeholder="any · glob:*.rs"
-        />
+        <div onKeyDown={onFilterKeyDown}>
+          <Input
+            label="path"
+            value={path}
+            onChange={(e) => setPath(e.target.value)}
+            aria-label="path filter"
+            placeholder="any · glob:*.rs"
+          />
+        </div>
         <Field label="after">
-          <div className="field-row">
+          <div className="field-row" onKeyDown={onFilterKeyDown}>
             <Input
               value={after}
               onChange={(e) => setAfter(e.target.value)}
-              onKeyDown={onFilterKeyDown}
+              aria-label="after date"
               placeholder={DATE_HINT_SHORT}
             />
             <DateAddon onPick={setAfter} />
           </div>
         </Field>
         <Field label="until">
-          <div className="field-row">
+          <div className="field-row" onKeyDown={onFilterKeyDown}>
             <Input
               value={until}
               onChange={(e) => setUntil(e.target.value)}
-              onKeyDown={onFilterKeyDown}
+              aria-label="until date"
               placeholder={DATE_HINT_SHORT}
             />
             <DateAddon onPick={setUntil} />
@@ -566,11 +575,13 @@ export default function App() {
         </Field>
         <Segmented values={LANES} value={mode} onChange={setMode} />
         <Popover>
-          <Popover.Trigger asChild>
-            <Button variant="ghost" size="sm" aria-label="what do the lanes mean?" title="what do the lanes mean?">
-              ?
-            </Button>
-          </Popover.Trigger>
+          <Popover.Trigger
+        className="trigger-button"
+        aria-label="what do the lanes mean?"
+        title="what do the lanes mean?"
+      >
+        ?
+      </Popover.Trigger>
           <Popover.Content align="start">
             <table className="lane-help">
               <tbody>
@@ -706,10 +717,12 @@ export default function App() {
           </tbody>
         </table>
         </div>
+        </Splitter.Panel>
+      <Splitter.ResizeTrigger id="list:detail" aria-label="resize panes" />
+      <Splitter.Panel id="detail">
         {data !== null && results.length === 0 && !error && (
           <Empty title="No matches" description="Try widening the revset or clearing filters." />
         )}
-
         {selectedResult && (
           <aside className="detail">
             <div className="detail-head">
@@ -739,7 +752,7 @@ export default function App() {
         <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
           refresh
         </Button>
-        <span>↑↓ navigate · everything the CLI does — no terminal required</span>
+        <span>↑↓ navigate</span>
       </footer>
     </div>
   );

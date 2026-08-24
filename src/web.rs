@@ -2,10 +2,12 @@
 //! API exposing everything the CLI can do. std-only HTTP; no web framework.
 
 use std::{
+    collections::{HashMap, VecDeque},
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
     process::Command,
+    sync::{Mutex, OnceLock},
 };
 
 use anyhow::{Context as _, Result};
@@ -16,6 +18,69 @@ use crate::search::{self, MatchMode, SearchRequest};
 static WEB_DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/assets/web");
 
 const DEFAULT_PORT: u16 = 7878;
+const CACHE_CAPACITY: usize = 64;
+
+/// Insertion-order-evicting cache. Not LRU: a `get` does not refresh order,
+/// which keeps the implementation lock-simple and is fine for our use.
+struct FifoCache {
+    entries: Mutex<HashMap<String, String>>,
+    order: Mutex<VecDeque<String>>,
+}
+
+impl FifoCache {
+    fn new() -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            order: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<String> {
+        self.entries.lock().expect("cache lock").get(key).cloned()
+    }
+
+    fn insert(&self, key: String, value: String) {
+        let mut entries = self.entries.lock().expect("cache lock");
+        let mut order = self.order.lock().expect("cache order lock");
+        if !entries.contains_key(&key) {
+            order.push_back(key.clone());
+            while order.len() > CACHE_CAPACITY {
+                let Some(evicted) = order.pop_front() else {
+                    break;
+                };
+                entries.remove(&evicted);
+            }
+        }
+        entries.insert(key, value);
+    }
+}
+
+fn diff_cache() -> &'static FifoCache {
+    static CACHE: OnceLock<FifoCache> = OnceLock::new();
+    CACHE.get_or_init(FifoCache::new)
+}
+
+fn stats_cache() -> &'static FifoCache {
+    static CACHE: OnceLock<FifoCache> = OnceLock::new();
+    CACHE.get_or_init(FifoCache::new)
+}
+
+/// Cache keys must be scoped per repository.
+fn cache_key(repository: Option<&PathBuf>, rest: &str) -> String {
+    format!(
+        "{}\u{1f}{rest}",
+        repository.map_or_else(String::new, |path| path.display().to_string())
+    )
+}
+
+/// anyhow's top-level Display can embed jj's own "Error: " prefix; strip it so
+/// JSON consumers never see doubled prefixes.
+fn clean_error_text(text: &str) -> String {
+    text.trim()
+        .strip_prefix("Error: ")
+        .unwrap_or(text.trim())
+        .to_owned()
+}
 
 /// Parse `itwas web [-p|--port N] [-R|--repository PATH]` arguments.
 pub fn run_from_args(args: impl Iterator<Item = String>) -> Result<()> {
@@ -107,16 +172,22 @@ fn handle_connection(stream: TcpStream, repository: Option<PathBuf>) -> Result<(
         })
         .collect();
 
-    let (status, content_type, body) = route(&method, &path, &params, repository);
-    respond(stream, status, content_type, body)
+    let (status, content_type, body, extra_headers) = if path == "/api/diff" {
+        api_diff(&params, repository)
+    } else {
+        route(&method, &path, &params, repository)
+    };
+    respond(stream, status, content_type, body, &extra_headers)
 }
+
+type Response = (u16, &'static str, Vec<u8>, Vec<(&'static str, String)>);
 
 fn route(
     method: &str,
     path: &str,
     params: &[(String, String)],
     repository: Option<PathBuf>,
-) -> (u16, &'static str, Vec<u8>) {
+) -> Response {
     if method != "GET" && method != "HEAD" {
         return json_response(405, br#"{"error":"method not allowed"}"#.to_vec());
     }
@@ -124,7 +195,7 @@ fn route(
         "/api/search" => api_search(params, repository),
         "/api/bookmarks" => match crate::actions::list_bookmarks(repository.as_deref()) {
             Ok(names) => json_response(200, format!("[{}]", names.iter().map(|name| json_string(name)).collect::<Vec<_>>().join(",")).into_bytes()),
-            Err(error) => json_error(500, &format!("{error:#}")),
+            Err(error) => json_error(500, &clean_error_text(&format!("{error:#}"))),
         },
         "/api/related" => {
             let Some(commit) = param(params, "commit") else {
@@ -147,13 +218,17 @@ fn route(
                         .join(",");
                     json_response(200, format!("[{items}]").into_bytes())
                 }
-                Err(error) => json_error(500, &format!("{error:#}")),
+                Err(error) => json_error(500, &clean_error_text(&format!("{error:#}"))),
             }
         }
         "/api/stats" => {
             let Some(commits) = param(params, "commits") else {
                 return json_error(400, "missing commits");
             };
+            let key = cache_key(repository.as_ref(), &commits);
+            if let Some(cached) = stats_cache().get(&key) {
+                return json_response(200, cached.into_bytes());
+            }
             let mut batch = String::from("{");
             for commit in commits.split(',').filter(|c| !c.is_empty()) {
                 if let Some(stat) =
@@ -171,6 +246,7 @@ fn route(
                 }
             }
             batch.push('}');
+            stats_cache().insert(key, batch.clone());
             json_response(200, batch.into_bytes())
         }
         "/api/diffstat" => {
@@ -190,15 +266,6 @@ fn route(
                 },
             )
         }
-        "/api/diff" => {
-            let Some(commit) = param(params, "commit") else {
-                return json_error(400, "missing commit");
-            };
-            match crate::actions::fetch_full_diff(repository.as_deref(), &commit) {
-                Ok(diff) => (200, "text/plain; charset=utf-8", diff.into_bytes()),
-                Err(error) => json_error(500, &format!("{error:#}")),
-            }
-        }
         "/api/meta" => json_response(
             200,
             format!(
@@ -214,10 +281,36 @@ fn route(
     }
 }
 
-fn api_search(
-    params: &[(String, String)],
-    repository: Option<PathBuf>,
-) -> (u16, &'static str, Vec<u8>) {
+/// `/api/diff` handled outside `route` because it carries the X-Cache header.
+#[allow(clippy::needless_pass_by_value)] // mirrors route's signature
+fn api_diff(params: &[(String, String)], repository: Option<PathBuf>) -> Response {
+    let Some(commit) = param(params, "commit") else {
+        return json_error(400, "missing commit");
+    };
+    let key = cache_key(repository.as_ref(), &commit);
+    if let Some(cached) = diff_cache().get(&key) {
+        return (
+            200,
+            "text/plain; charset=utf-8",
+            cached.into_bytes(),
+            vec![("X-Cache", "HIT".to_owned())],
+        );
+    }
+    match crate::actions::fetch_full_diff(repository.as_deref(), &commit) {
+        Ok(diff) => {
+            diff_cache().insert(key, diff.clone());
+            (
+                200,
+                "text/plain; charset=utf-8",
+                diff.into_bytes(),
+                vec![("X-Cache", "MISS".to_owned())],
+            )
+        }
+        Err(error) => json_error(500, &clean_error_text(&format!("{error:#}"))),
+    }
+}
+
+fn api_search(params: &[(String, String)], repository: Option<PathBuf>) -> Response {
     let get = |key: &str| param(params, key);
     let request = SearchRequest {
         // The UI sends "q"; keep accepting "query" for API compatibility.
@@ -236,11 +329,7 @@ fn api_search(
     };
     match search::search(&request) {
         Ok(output) => json_response(200, search::to_json(&output).into_bytes()),
-        Err(error) => {
-            let text = format!("{error:#}");
-            let text = text.strip_prefix("Error: ").unwrap_or(&text);
-            json_error(400, text)
-        }
+        Err(error) => json_error(400, &clean_error_text(&format!("{error:#}"))),
     }
 }
 
@@ -264,7 +353,7 @@ fn content_type_for(extension: Option<&str>) -> &'static str {
     }
 }
 
-fn serve_static(path: &str) -> (u16, &'static str, Vec<u8>) {
+fn serve_static(path: &str) -> Response {
     let trimmed = path.trim_start_matches('/');
     let file_path = if trimmed.is_empty() { "index.html" } else { trimmed };
     let file = WEB_DIST
@@ -273,21 +362,28 @@ fn serve_static(path: &str) -> (u16, &'static str, Vec<u8>) {
     match file {
         Some(file) => {
             let extension = file.path().extension().and_then(|ext| ext.to_str());
-            (200, content_type_for(extension), file.contents().to_vec())
+            (
+                200,
+                content_type_for(extension),
+                file.contents().to_vec(),
+                Vec::new(),
+            )
         }
         None => (
             404,
             "text/plain; charset=utf-8",
-            b"web assets not embedded - run: cd apps/web && npm install && npm run build".to_vec(),
+            b"web assets not embedded - run: cd apps/web && npm install && npm run build"
+                .to_vec(),
+            Vec::new(),
         ),
     }
 }
 
-fn json_response(status: u16, body: Vec<u8>) -> (u16, &'static str, Vec<u8>) {
-    (status, "application/json", body)
+fn json_response(status: u16, body: Vec<u8>) -> Response {
+    (status, "application/json", body, Vec::new())
 }
 
-fn json_error(status: u16, message: &str) -> (u16, &'static str, Vec<u8>) {
+fn json_error(status: u16, message: &str) -> Response {
     json_response(status, format!("{{\"error\":{}}}", json_string(message)).into_bytes())
 }
 
@@ -331,7 +427,13 @@ fn url_decode(value: &str) -> String {
 }
 
 #[allow(clippy::needless_pass_by_value)] // takes ownership for a single flush
-fn respond(mut stream: TcpStream, status: u16, content_type: &str, body: Vec<u8>) -> Result<()> {
+fn respond(
+    mut stream: TcpStream,
+    status: u16,
+    content_type: &str,
+    body: Vec<u8>,
+    extra_headers: &[(&'static str, String)],
+) -> Result<()> {
     #[allow(clippy::match_same_arms)]
     let reason = match status {
         200 => "OK",
@@ -341,12 +443,70 @@ fn respond(mut stream: TcpStream, status: u16, content_type: &str, body: Vec<u8>
         500 => "Internal Server Error",
         _ => "OK",
     };
-    let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+    let mut header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n",
         body.len()
     );
+    for (name, value) in extra_headers {
+        header.push_str(name);
+        header.push_str(": ");
+        header.push_str(value);
+        header.push_str("\r\n");
+    }
+    header.push_str("Connection: close\r\n\r\n");
     stream.write_all(header.as_bytes())?;
     stream.write_all(&body)?;
     stream.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_returns_inserted_value() {
+        let cache = FifoCache::new();
+        assert_eq!(cache.get("k"), None);
+        cache.insert("k".to_owned(), "v".to_owned());
+        assert_eq!(cache.get("k"), Some("v".to_owned()));
+    }
+
+    #[test]
+    fn cache_evicts_in_insertion_order_at_capacity() {
+        let cache = FifoCache::new();
+        for index in 0..CACHE_CAPACITY as u32 {
+            cache.insert(format!("key{index}"), format!("value{index}"));
+        }
+        // Inserting one more evicts the OLDEST entry (insertion order, not LRU).
+        cache.insert("overflow".to_owned(), "newest".to_owned());
+        let oldest = format!("key{}", 0);
+        let newest = format!("key{}", CACHE_CAPACITY as u32 - 1);
+        assert_eq!(cache.get(&oldest), None, "oldest must be evicted");
+        assert_eq!(cache.get(&newest), Some(format!("value{}", CACHE_CAPACITY as u32 - 1)));
+        assert_eq!(cache.get("overflow"), Some("newest".to_owned()));
+    }
+
+    #[test]
+    fn reinserting_updates_value_but_keeps_fifo_priority() {
+        let cache = FifoCache::new();
+        for index in 0..CACHE_CAPACITY as u32 {
+            cache.insert(format!("key{index}"), format!("value{index}"));
+        }
+        // Refresh key0: value updates, but its eviction slot stays oldest.
+        cache.insert("key0".to_owned(), "updated".to_owned());
+        assert_eq!(cache.get("key0"), Some("updated".to_owned()));
+        // One more insert evicts key0 (oldest slot), NOT the refreshed value's
+        // recency -- this cache is FIFO, deliberately not LRU.
+        cache.insert("overflow".to_owned(), "newest".to_owned());
+        assert_eq!(cache.get("key0"), None);
+        assert_eq!(cache.get("overflow"), Some("newest".to_owned()));
+    }
+
+    #[test]
+    fn clean_error_strips_doubled_prefix() {
+        assert_eq!(clean_error_text("Error: Revision `u` is ambiguous"), "Revision `u` is ambiguous");
+        assert_eq!(clean_error_text("plain message"), "plain message");
+        assert_eq!(clean_error_text(""), "");
+    }
 }
