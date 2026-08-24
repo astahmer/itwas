@@ -56,6 +56,7 @@ main {
 /* Columnar alignment via real table layout; the wrapper scrolls */
 .results-scroll {
   overflow-y: auto; border: 1px solid var(--border); border-radius: 8px;
+  padding-bottom: 8px;
 }
 table.results { width: 100%; border-collapse: collapse; }
 table.results th {
@@ -81,7 +82,7 @@ td.marker { width: 14px; color: var(--green); font-weight: 700; }
 td.date, .detail .date { color: var(--text-muted); }
 .added { color: var(--green); font-weight: 600; }
 .removed { color: var(--red); font-weight: 600; }
-.file { color: var(--accent); max-width: 200px !important; }
+.file { color: var(--accent); max-width: 280px !important; }
 .title { max-width: none !important; }
 
 .detail {
@@ -107,3 +108,26 @@ footer {
   padding: 8px 14px; color: var(--text-muted);
   border-top: 1px solid var(--border);
 }
+
+/* Splitter */
+main [data-scope="splitter"] { height: 100%; }
+[data-part="resize-trigger"] {
+  width: 8px; margin: 0 -2px; cursor: col-resize;
+  border-radius: 4px; transition: background 0.15s;
+}
+[data-part="resize-trigger"][data-active],
+[data-part="resize-trigger"]:hover { background: var(--accent); }
+
+.field-row { display: flex; align-items: stretch; gap: 2px; }
+.field-row [data-scope="popover"] [data-part="trigger"],
+.field-row .button { align-self: stretch; }
+.field-row .input { width: 140px; }
+.date-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.lane-help td { padding: 3px 10px 3px 0; white-space: normal; }
+
+.copy-path {
+  opacity: 0; border: none; background: transparent;
+  color: var(--accent); cursor: pointer; font-size: 12px;
+  padding: 0 4px; vertical-align: baseline;
+}
+tr:hover .copy-path, tr:focus-within .copy-path { opacity: 1; }

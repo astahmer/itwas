@@ -236,7 +236,11 @@ fn api_search(
     };
     match search::search(&request) {
         Ok(output) => json_response(200, search::to_json(&output).into_bytes()),
-        Err(error) => json_error(400, &format!("{error:#}")),
+        Err(error) => {
+            let text = format!("{error:#}");
+            let text = text.strip_prefix("Error: ").unwrap_or(&text);
+            json_error(400, text)
+        }
     }
 }
 

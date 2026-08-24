@@ -5,8 +5,20 @@ import {
   useRef,
   useState,
 } from "react";
+import { Splitter } from "@ark-ui/react";
 import "@cloudflare/kumo/styles/standalone";
-import { Badge, Button, ClipboardText, Empty, Input, Loader } from "@cloudflare/kumo";
+import {
+  Autocomplete,
+  Badge,
+  Button,
+  ClipboardText,
+  DatePicker,
+  Empty,
+  Field,
+  Input,
+  Loader,
+  Popover,
+} from "@cloudflare/kumo";
 import { PatchDiff } from "@pierre/diffs/react";
 import "./app.css";
 
@@ -43,6 +55,35 @@ interface RelatedChange {
 const LANES: Mode[] = ["metadata", "changes", "snapshot"];
 const MATCH_MODES: MatchMode[] = ["literal", "regex", "fuzzy"];
 const DATE_HINT_SHORT = "e.g. 2d · today";
+
+const LANE_HELP: Record<Mode, string> = {
+  metadata: "Search commit messages, bookmark and tag names",
+  changes: "Search added (+) lines in every diff — find when text was introduced",
+  snapshot: "Search file contents at one revision (default @)",
+};
+
+const REVSET_PRESETS: string[] = [
+  "all()",
+  "main..@",
+  "@-",
+  "mine()",
+  "root()",
+  "heads(all())",
+  "@--",
+];
+
+function isoDaysAgo(days: number): string {
+  const d = new Date(Date.now() - days * 86400_000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const DATE_PRESETS: [string, string][] = [
+  ["today", isoDaysAgo(0)],
+  ["last week", isoDaysAgo(7)],
+  ["last month", isoDaysAgo(30)],
+  ["last 90 days", isoDaysAgo(90)],
+];
 
 function hashHue(text: string): number {
   let hash = 0;
@@ -212,6 +253,53 @@ function Related({ commit }: { commit: string }) {
   );
 }
 
+/** Small calendar/preset addon for a date filter input. */
+function DateAddon({
+  onPick,
+}: {
+  onPick: (value: string) => void;
+}) {
+  const [picked, setPicked] = useState<Date | undefined>(undefined);
+  return (
+    <Popover>
+      <Popover.Trigger asChild>
+        <Button variant="ghost" size="sm" aria-label="pick a date" title="pick a date">
+          ▾
+        </Button>
+      </Popover.Trigger>
+      <Popover.Content align="end">
+        <div className="date-presets">
+          {DATE_PRESETS.map(([label, iso]) => (
+            <button
+              key={label}
+              className="button secondary"
+              onClick={() => {
+                onPick(iso);
+                setPicked(new Date(`${iso}T12:00:00`));
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <DatePicker
+          mode="single"
+          selected={picked}
+          onChange={(d: Date | undefined) => {
+            if (d) {
+              const pad = (n: number) => String(n).padStart(2, "0");
+              onPick(
+                `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`,
+              );
+              setPicked(d);
+            }
+          }}
+        />
+      </Popover.Content>
+    </Popover>
+  );
+}
+
 function Segmented<T extends string>({
   values,
   value,
@@ -316,6 +404,21 @@ export default function App() {
     [results.length],
   );
 
+  const focusSelectedRow = useCallback(() => {
+    const rows = tableRef.current?.querySelectorAll("tr");
+    (rows?.[selected] as HTMLElement | undefined)?.focus();
+  }, [selected]);
+
+  const onFilterKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        focusSelectedRow();
+      }
+    },
+    [focusSelectedRow],
+  );
+
   // Keep the keyboard-selected row visible.
   useEffect(() => {
     tableRef.current
@@ -355,6 +458,7 @@ export default function App() {
         })
         .then((body) => {
           setData(body);
+          setError(null);
           setSelected(0);
         })
         .catch((e) => setError(String(e)));
@@ -412,29 +516,97 @@ export default function App() {
           placeholder="type to search"
           autoFocus
         />
-        <Input label="revset" value={revset} onChange={(e) => setRevset(e.target.value)} placeholder="all()" />
-        <Input label="path" value={path} onChange={(e) => setPath(e.target.value)} placeholder="any" />
+        <div onKeyDown={onFilterKeyDown}>
+        <Autocomplete
+          items={REVSET_PRESETS}
+          value={revset}
+          onValueChange={(value) => setRevset(String(value ?? ""))}
+          label="revset"
+        >
+          <Autocomplete.InputGroup placeholder="all()" />
+          <Autocomplete.Content>
+            <Autocomplete.List>
+              {(item: string) => (
+                <Autocomplete.Item key={item} value={item}>
+                  {item}
+                </Autocomplete.Item>
+              )}
+            </Autocomplete.List>
+          </Autocomplete.Content>
+        </Autocomplete>
+        </div>
         <Input
-          label="after"
-          value={after}
-          onChange={(e) => setAfter(e.target.value)}
-          placeholder={DATE_HINT_SHORT}
-          title={DATE_HINT_SHORT + " · yesterday · now"}
+          label="path"
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          onKeyDown={onFilterKeyDown}
+          placeholder="any · glob:*.rs"
         />
-        <Input
-          label="until"
-          value={until}
-          onChange={(e) => setUntil(e.target.value)}
-          placeholder={DATE_HINT_SHORT}
-          title={DATE_HINT_SHORT + " · yesterday · now (inclusive day)"}
-        />
+        <Field label="after">
+          <div className="field-row">
+            <Input
+              value={after}
+              onChange={(e) => setAfter(e.target.value)}
+              onKeyDown={onFilterKeyDown}
+              placeholder={DATE_HINT_SHORT}
+            />
+            <DateAddon onPick={setAfter} />
+          </div>
+        </Field>
+        <Field label="until">
+          <div className="field-row">
+            <Input
+              value={until}
+              onChange={(e) => setUntil(e.target.value)}
+              onKeyDown={onFilterKeyDown}
+              placeholder={DATE_HINT_SHORT}
+            />
+            <DateAddon onPick={setUntil} />
+          </div>
+        </Field>
         <Segmented values={LANES} value={mode} onChange={setMode} />
+        <Popover>
+          <Popover.Trigger asChild>
+            <Button variant="ghost" size="sm" aria-label="what do the lanes mean?" title="what do the lanes mean?">
+              ?
+            </Button>
+          </Popover.Trigger>
+          <Popover.Content align="start">
+            <table className="lane-help">
+              <tbody>
+                {LANES.map((lane) => (
+                  <tr key={lane}>
+                    <td className="relation parent">{lane}</td>
+                    <td>{LANE_HELP[lane]}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Popover.Content>
+        </Popover>
         <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
       </section>
 
       {error && <div className="error banner">{error}</div>}
 
       <main>
+      <Splitter.Root
+        panels={[{ id: "list", minSize: 25 }, { id: "detail", minSize: 25 }]}
+        defaultValue={useMemo(() => {
+          try {
+            const stored = window.localStorage.getItem("itwas-splitter");
+            if (stored) return JSON.parse(stored) as [string, string];
+          } catch {}
+          return ["55", "45"];
+        }, [])}
+        onResizeEnd={(details) =>
+          window.localStorage.setItem(
+            "itwas-splitter",
+            JSON.stringify(details.size),
+          )
+        }
+      >
+      <Splitter.Panel id="list">
         <div className="results-scroll">
         <table className="results">
           <thead>
@@ -506,9 +678,23 @@ export default function App() {
                   </td>
                   {showFileColumn && (
                     <td className="file">
-                      {result.file
-                        ? `${result.file}${result.line !== null ? `:${result.line}` : ""}`
-                        : ""}
+                      {result.file ? (
+                        <>
+                          {result.file}
+                          {result.line !== null ? `:${result.line}` : ""}
+                          <button
+                            className="copy-path"
+                            aria-label={`copy path ${result.file}`}
+                            title={`copy path ${result.file}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigator.clipboard?.writeText(result.file!);
+                            }}
+                          >
+                            ⧉
+                          </button>
+                        </>
+                      ) : null}
                     </td>
                   )}
                   <td className="title" title={result.title}>
@@ -545,6 +731,8 @@ export default function App() {
             <Diff commit={selectedResult.commit_id} theme={theme} />
           </aside>
         )}
+      </Splitter.Panel>
+      </Splitter.Root>
       </main>
 
       <footer>

@@ -257,7 +257,7 @@ fn spawn(mut command: Command) -> Result<Child> {
 
 /// Translate raw jj stderr into actionable messages.
 fn friendly_error(stderr: &str) -> String {
-    let trimmed = stderr.trim();
+    let trimmed = stderr.trim().strip_prefix("Error: ").unwrap_or(stderr.trim()).trim();
     if trimmed.contains("doesn't exist")
         && let Some((_, rest)) = trimmed.split_once('`')
         && let Some((name, _)) = rest.split_once('`')
