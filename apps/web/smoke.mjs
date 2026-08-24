@@ -22,6 +22,11 @@ const dom = new JSDOM(html.replace(/<script[^>]*><\/script>/, ""), {
   pretendToBeVisual: true,
 });
 const { window } = dom;
+window.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
 window.matchMedia ??= () => ({ matches: false, addListener() {}, removeListener() {}, addEventListener() {}, removeEventListener() {} });
 const url = String(window.location);
 window.fetch = async (input) => {
@@ -67,13 +72,15 @@ window.fetch = async (input) => {
 };
 
 const bundle = readFileSync(bundlePath, "utf8");
+window.addEventListener("error", (e) => console.log("WINDOW ERROR:", String(e.message).slice(0, 300)));
+window.addEventListener("unhandledrejection", (e) => console.log("REJECTION:", String(e.reason).slice(0, 300)));
 try {
   window.eval(bundle);
 } catch (error) {
-  console.log("EVAL CRASH:", String(error).slice(0, 200));
+  console.log("EVAL CRASH:", String(error).slice(0, 300));
   process.exit(1);
 }
-await new Promise((resolve) => setTimeout(resolve, 600));
+await new Promise((resolve) => setTimeout(resolve, 2000));
 const root = window.document.getElementById("root");
 const html2 = root?.innerHTML ?? "";
 console.log("mounted:", html2.length > 100);
@@ -83,3 +90,5 @@ console.log("change id rendered:", html2.includes("oyzw"));
 console.log("count rendered:", html2.includes("1 match"));
 console.log("pierre diff rendered:", html2.includes("diff --git") || html2.includes("added line"));
 console.log("pierre container:", html2.includes("diffs-container"));
+const aside = window.document.querySelector(".detail");
+console.log("detail html sample:", (aside?.innerHTML ?? "").slice(0, 600));

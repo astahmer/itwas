@@ -1,13 +1,21 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-// NOTE: kumo-ui's published bundle embeds its own React (crashes hooks when
-// mixed with ours), so we reuse only its stylesheet + classnames
-// (.button/.primary/.secondary/.input/.label/.error).
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+// NOTE: kumo-ui's published bundle embeds its own React (crashing hooks when
+// mixed with ours) — we vendor equivalent components in ./kumo.tsx using
+// kumo-ui's stylesheet.
 import "kumo-ui/styles.css";
 import { PatchDiff } from "@pierre/diffs/react";
+import { Button, CopyButton, Field, Input, Loader } from "./kumo";
 import "./app.css";
 
 type Mode = "metadata" | "changes" | "snapshot";
 type MatchMode = "literal" | "regex" | "fuzzy";
+type Theme = "dark" | "light";
 
 interface SearchResult {
   commit_id: string;
@@ -37,8 +45,7 @@ interface RelatedChange {
 
 const LANES: Mode[] = ["metadata", "changes", "snapshot"];
 const MATCH_MODES: MatchMode[] = ["literal", "regex", "fuzzy"];
-const DATE_HINT =
-  "YYYY-MM-DD · YYYY-MM-DD HH:MM · 30m/12h/2d/3w · today/yesterday/now";
+const DATE_HINT_SHORT = "YYYY-MM-DD · 2d · today";
 
 function hashHue(text: string): number {
   let hash = 0;
@@ -114,7 +121,7 @@ function splitPatch(patch: string): string[] {
     .filter((section) => section.startsWith("diff --git "));
 }
 
-function Diff({ commit }: { commit: string }) {
+function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
@@ -132,7 +139,7 @@ function Diff({ commit }: { commit: string }) {
     };
   }, [commit]);
   if (error) return <div className="error">{error}</div>;
-  if (diff === null) return <div className="spinner-small" />;
+  if (diff === null) return <Loader />;
 
   const lowered = filter.trim().toLowerCase();
   const files = splitPatch(diff);
@@ -145,7 +152,7 @@ function Diff({ commit }: { commit: string }) {
             key={index}
             patch={filePatch}
             disableWorkerPool
-            options={{ theme: "pierre-dark" }}
+            options={{ theme: theme === "dark" ? "pierre-dark" : "pierre-light" }}
           />
         ))}
       </>
@@ -154,7 +161,12 @@ function Diff({ commit }: { commit: string }) {
   const lines = filterPatch(diff, filter);
   return (
     <>
-      <input className="input" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      <Input
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        placeholder="find within this diff…"
+        autoFocus
+      />
       <pre className="fallback-diff">
         {lines.map((line, i) => (
           <div key={i}>{line || " "}</div>
@@ -197,34 +209,6 @@ function Related({ commit }: { commit: string }) {
   );
 }
 
-const VALID_MODES: Mode[] = LANES;
-const VALID_MATCHES: MatchMode[] = MATCH_MODES;
-
-/** Initial filter state from the URL so ?q=…&revset=… links are shareable. */
-function stateFromUrl(): {
-  query: string;
-  revset: string;
-  path: string;
-  after: string;
-  until: string;
-  mode: Mode;
-  matchMode: MatchMode;
-} {
-  const params = new URLSearchParams(window.location.search);
-  const modeParam = params.get("mode") as Mode | null;
-  const matchParam = params.get("match") as MatchMode | null;
-  return {
-    query: params.get("q") ?? "",
-    revset: params.get("revset") ?? "",
-    path: params.get("path") ?? "",
-    after: params.get("after") ?? "",
-    until: params.get("until") ?? "",
-    mode: modeParam && VALID_MODES.includes(modeParam) ? modeParam : "metadata",
-    matchMode:
-      matchParam && VALID_MATCHES.includes(matchParam) ? matchParam : "literal",
-  };
-}
-
 function Segmented<T extends string>({
   values,
   value,
@@ -235,18 +219,54 @@ function Segmented<T extends string>({
   onChange: (next: T) => void;
 }) {
   return (
-    <span className="segmented">
+    <span className="segmented" role="group">
       {values.map((candidate) => (
-        <button
+        <Button
           key={candidate}
-          className={`button ${candidate === value ? "primary" : "secondary"}`}
+          variant={candidate === value ? "primary" : "secondary"}
+          aria-pressed={candidate === value}
           onClick={() => onChange(candidate)}
         >
           {candidate}
-        </button>
+        </Button>
       ))}
     </span>
   );
+}
+
+const VALID_MODES: Mode[] = LANES;
+const VALID_MATCHES: MatchMode[] = MATCH_MODES;
+
+/** Initial state from the URL (+ persisted theme) so links are shareable. */
+function stateFromUrl(): {
+  query: string;
+  revset: string;
+  path: string;
+  after: string;
+  until: string;
+  mode: Mode;
+  matchMode: MatchMode;
+  theme: Theme;
+} {
+  const params = new URLSearchParams(window.location.search);
+  const modeParam = params.get("mode") as Mode | null;
+  const matchParam = params.get("match") as MatchMode | null;
+  const themeParam = params.get("theme");
+  const storedTheme = window.localStorage.getItem("itwas-theme") as Theme | null;
+  return {
+    query: params.get("q") ?? "",
+    revset: params.get("revset") ?? "",
+    path: params.get("path") ?? "",
+    after: params.get("after") ?? "",
+    until: params.get("until") ?? "",
+    mode: modeParam && VALID_MODES.includes(modeParam) ? modeParam : "metadata",
+    matchMode:
+      matchParam && VALID_MATCHES.includes(matchParam) ? matchParam : "literal",
+    theme:
+      themeParam === "light" || themeParam === "dark"
+        ? themeParam
+        : (storedTheme ?? "dark"),
+  };
 }
 
 export default function App() {
@@ -258,24 +278,58 @@ export default function App() {
   const [until, setUntil] = useState(initial.until);
   const [mode, setMode] = useState<Mode>(initial.mode);
   const [matchMode, setMatchMode] = useState<MatchMode>(initial.matchMode);
+  const [theme, setTheme] = useState<Theme>(initial.theme);
   const [limit, setLimit] = useState(200);
   const [data, setData] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<number>(0);
   const [stats, setStats] = useState<Record<string, { added: number; removed: number }>>({});
   const debounceRef = useRef<number | undefined>(undefined);
+  const tableRef = useRef<HTMLTableSectionElement | null>(null);
+
+  // Reflect the theme on <html> for CSS and persist it.
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("itwas-theme", theme);
+  }, [theme]);
+
+  const results = data?.results ?? [];
+  const showRefsColumn = results.some(
+    (r) => r.bookmarks.length > 0 || r.tags.length > 0,
+  );
+  const showFileColumn =
+    mode !== "metadata" && results.some((r) => r.file !== null);
+
+  const moveSelection = useCallback(
+    (delta: number) => {
+      setSelected((prev) =>
+        results.length === 0
+          ? 0
+          : Math.min(results.length - 1, Math.max(0, prev + delta)),
+      );
+    },
+    [results.length],
+  );
+
+  // Keep the keyboard-selected row visible.
+  useEffect(() => {
+    tableRef.current
+      ?.querySelectorAll("tr")
+      [selected]?.scrollIntoView({ block: "nearest" });
+  }, [selected]);
 
   const params = useMemo(() => {
     const p = new URLSearchParams();
     if (query.trim()) p.set("q", query.trim());
     if (mode !== "metadata") p.set("mode", mode);
     if (matchMode !== "literal") p.set("match", matchMode);
+    if (theme !== "dark") p.set("theme", theme);
     if (revset.trim()) p.set("revset", revset.trim());
     if (path.trim()) p.set("path", path.trim());
     if (after.trim()) p.set("after", after.trim());
     if (until.trim()) p.set("until", until.trim());
     return p.toString();
-  }, [query, revset, path, after, until, mode, matchMode]);
+  }, [query, revset, path, after, until, mode, matchMode, theme]);
 
   // Keep the address bar in sync so any search is a shareable permalink.
   useEffect(() => {
@@ -305,7 +359,7 @@ export default function App() {
 
   // Batch-fetch diff stats for visible results.
   useEffect(() => {
-    const missing = (data?.results ?? [])
+    const missing = results
       .filter((r) => !(r.commit_id in stats))
       .map((r) => r.commit_id)
       .slice(0, 40);
@@ -318,7 +372,7 @@ export default function App() {
       .catch(() => {});
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const selectedResult = data?.results[selected];
+  const selectedResult = results[selected];
   const countLabel =
     data === null
       ? "…"
@@ -334,54 +388,55 @@ export default function App() {
         <span className="brand">itwas</span>
         <span className="tagline">jj history search</span>
         <span className="count">{countLabel}</span>
+        <Button
+          variant="third"
+          aria-label="toggle light/dark theme"
+          title="toggle light/dark theme"
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+        >
+          {theme === "dark" ? "☾ dark" : "☀ light"}
+        </Button>
       </header>
 
       <section className="controls">
-        <label>
-          <span className="label">query</span>
-          <input
-            className="input"
+        <Field label="query">
+          <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="type to search"
             autoFocus
           />
-        </label>
-        <label>
-          <span className="label">revset</span>
-          <input
-            className="input"
+        </Field>
+        <Field label="revset">
+          <Input
             value={revset}
             onChange={(e) => setRevset(e.target.value)}
             placeholder="all()"
           />
-        </label>
-        <label>
-          <span className="label">path</span>
-          <input
-            className="input"
+        </Field>
+        <Field label="path">
+          <Input
             value={path}
             onChange={(e) => setPath(e.target.value)}
             placeholder="any"
           />
-        </label>
-        <label>
-          <span className="label">after</span>
-          <input
-            className="input"
+        </Field>
+        <Field label="after">
+          <Input
             value={after}
             onChange={(e) => setAfter(e.target.value)}
-            placeholder={DATE_HINT}
+            placeholder={DATE_HINT_SHORT}
+            title={DATE_HINT_SHORT + " · yesterday · now"}
           />
-        </label>
-        <label>
-          <span className="label">until</span>
-          <input
-            className="input"
+        </Field>
+        <Field label="until">
+          <Input
             value={until}
             onChange={(e) => setUntil(e.target.value)}
+            placeholder={DATE_HINT_SHORT}
+            title={DATE_HINT_SHORT + " · yesterday · now (inclusive day)"}
           />
-        </label>
+        </Field>
         <Segmented values={LANES} value={mode} onChange={setMode} />
         <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
       </section>
@@ -394,37 +449,59 @@ export default function App() {
             <tr>
               <th />
               <th>change</th>
-              <th>refs</th>
+              {showRefsColumn && <th>refs</th>}
               <th>date</th>
               <th>stats</th>
-              <th>file</th>
+              {showFileColumn && <th>file</th>}
               <th>title</th>
             </tr>
           </thead>
-          <tbody>
-            {(data?.results ?? []).map((result, index) => {
+          <tbody ref={tableRef}>
+            {results.map((result, index) => {
               const stat = stats[result.commit_id];
               return (
                 <tr
                   key={result.commit_id + result.title + index}
+                  tabIndex={0}
+                  aria-selected={index === selected}
                   className={index === selected ? "selected" : ""}
                   onClick={() => setSelected(index)}
+                  onKeyDown={(e) => {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      moveSelection(1);
+                    } else if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      moveSelection(-1);
+                    } else if (e.key === "Home") {
+                      e.preventDefault();
+                      setSelected(0);
+                    } else if (e.key === "End") {
+                      e.preventDefault();
+                      setSelected(results.length - 1);
+                    }
+                  }}
                 >
                   <td className="marker">{index === selected ? "›" : ""}</td>
                   <td>
                     <ChangeId value={result.change_id} />
                   </td>
-                  <td className="refs">
-                    {result.bookmarks.map((b) => (
-                      <span key={b} className={`bookmark ${["main", "master", "trunk"].includes(b) ? "primary-ref" : ""}`}>
-                        {b}
-                      </span>
-                    ))}
-                    {result.tags.map((t) => (
-                      <span key={t} className="tag-ref">tag:{t}</span>
-                    ))}
-                  </td>
-                  <td className="date">
+                  {showRefsColumn && (
+                    <td className="refs">
+                      {result.bookmarks.map((b) => (
+                        <span
+                          key={b}
+                          className={`bookmark ${["main", "master", "trunk"].includes(b) ? "primary-ref" : ""}`}
+                        >
+                          {b}
+                        </span>
+                      ))}
+                      {result.tags.map((t) => (
+                        <span key={t} className="tag-ref">tag:{t}</span>
+                      ))}
+                    </td>
+                  )}
+                  <td className="date" title={result.timestamp !== null ? absolute(result.timestamp) : undefined}>
                     {result.timestamp !== null ? relative(result.timestamp) : ""}
                   </td>
                   <td className="stat">
@@ -435,12 +512,16 @@ export default function App() {
                       </>
                     ) : null}
                   </td>
-                  <td className="file">
-                    {result.file
-                      ? `${result.file}${result.line !== null ? `:${result.line}` : ""}`
-                      : ""}
+                  {showFileColumn && (
+                    <td className="file">
+                      {result.file
+                        ? `${result.file}${result.line !== null ? `:${result.line}` : ""}`
+                        : ""}
+                    </td>
+                  )}
+                  <td className="title" title={result.title}>
+                    {result.title || <span className="date">(no description)</span>}
                   </td>
-                  <td className="title">{result.title}</td>
                 </tr>
               );
             })}
@@ -451,24 +532,10 @@ export default function App() {
           <aside className="detail">
             <div className="detail-head">
               <ChangeId value={selectedResult.change_id} />
-              <button
-                className="button secondary"
-                onClick={() =>
-                  navigator.clipboard?.writeText(selectedResult.change_id)
-                }
-              >
-                copy id
-              </button>
-              <button
-                className="button secondary"
-                onClick={() =>
-                  navigator.clipboard?.writeText(
-                    `jj new ${selectedResult.change_id}`,
-                  )
-                }
-              >
+              <CopyButton value={selectedResult.change_id}>copy id</CopyButton>
+              <CopyButton value={`jj new ${selectedResult.change_id}`}>
                 copy jj new
-              </button>
+              </CopyButton>
               {selectedResult.author && (
                 <span className="author">{selectedResult.author}</span>
               )}
@@ -482,16 +549,16 @@ export default function App() {
               </p>
             )}
             <Related commit={selectedResult.commit_id} />
-            <Diff commit={selectedResult.commit_id} />
+            <Diff commit={selectedResult.commit_id} theme={theme} />
           </aside>
         )}
       </main>
 
       <footer>
-        <button className="button third" onClick={() => window.location.reload()}>
+        <Button variant="third" onClick={() => window.location.reload()}>
           refresh
-        </button>
-        <span>everything the CLI does — no terminal required</span>
+        </Button>
+        <span>↑↓ navigate · everything the CLI does — no terminal required</span>
       </footer>
     </div>
   );

@@ -338,7 +338,11 @@ fn search_metadata(request: &SearchRequest) -> Result<SearchOutput> {
         let author = fields.next();
         let timestamp: Option<i64> = timestamp_raw.parse().ok();
         let searchable = format!("{description}\n{bookmarks}\n{tags}");
-        let is_match = matcher.as_ref().is_none_or(|m| m.is_match(&searchable))
+        // Skip jj's virtual root commit (empty description, unix epoch).
+        let is_placeholder = description.trim().is_empty()
+            && timestamp.is_none_or(|ts| ts <= 0);
+        let is_match = !is_placeholder
+            && matcher.as_ref().is_none_or(|m| m.is_match(&searchable))
             && in_date_range(request, timestamp);
         if is_match {
             let title = description.lines().next().unwrap_or_default().to_owned();
