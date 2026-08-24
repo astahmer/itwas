@@ -19,7 +19,8 @@ Then("the list and detail panels are side-by-side", async ({ page }) => {
   expect(list).not.toBeNull();
   expect(detail).not.toBeNull();
   // Horizontally adjacent: detail starts where list ends (within tolerance).
-  expect(Math.abs((list!.x + list!.width) - detail!.x)).toBeLessThan(10);
+  // 12px gutter holds the visible resize handle
+    expect(Math.abs((list!.x + list!.width) - detail!.x)).toBeLessThan(16);
   // Same vertical range: NOT stacked.
   expect(Math.abs(list!.y - detail!.y)).toBeLessThan(10);
   expect(Math.abs(list!.height - detail!.height)).toBeLessThan(8);
