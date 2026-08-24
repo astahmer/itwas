@@ -52,6 +52,12 @@ interface RelatedChange {
   title: string;
 }
 
+type SortKey = "change" | "date" | "stats" | "title";
+interface SortState {
+  key: SortKey;
+  dir: "asc" | "desc";
+}
+
 const LANES: Mode[] = ["metadata", "changes", "snapshot"];
 const MATCH_MODES: MatchMode[] = ["literal", "regex", "fuzzy"];
 const DATE_HINT_SHORT = "e.g. 2d · today";
@@ -61,6 +67,21 @@ const LANE_HELP: Record<Mode, string> = {
   changes: "Search added (+) lines in every diff — find when text was introduced",
   snapshot: "Search file contents at one revision (default @)",
 };
+
+const REVSET_CHEATSHEET: [string, string][] = [
+  ["all()", "every revision in the repo"],
+  ["mine()", "revisions authored by you"],
+  ["main..@", "commits on your branch not on main"],
+  ["@-", "parent of the working copy"],
+  ["root()", "the empty root commit"],
+  ["heads(all())", "tip revisions (branch heads)"],
+  ["::main", "all ancestors of main"],
+  ["conflicts()", "revisions with merge conflicts"],
+];
+
+const SORTABLE_COLUMNS: SortKey[] = ["change", "date", "stats", "title"];
+const ROW_HEIGHT = 28;
+const WINDOW_OVERSCAN = 10;
 
 const REVSET_PRESETS: string[] = [
   "all()",
@@ -163,11 +184,13 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
+  const [forceFlat, setForceFlat] = useState(false);
   useEffect(() => {
     let alive = true;
     setDiff(null);
     setError(null);
     setFilter("");
+    setForceFlat(false);
     fetch(`/api/diff?commit=${encodeURIComponent(commit)}`)
       .then((r) => (r.ok ? r.text() : Promise.reject(new Error(r.statusText))))
       .then((text) => alive && setDiff(text))
@@ -179,10 +202,20 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   if (error) return <div className="error">{error}</div>;
   if (diff === null) return <Loader />;
 
+  // Large-diff cutoff: Pierre's virtualizer chokes on huge patches, so offer
+  // a flat fallback instead. maxdiff=<bytes> query param overrides for tests.
+  const maxDiffParam = Number(
+    new URLSearchParams(window.location.search).get("maxdiff") ?? "",
+  );
+  const maxDiffChars = Number.isFinite(maxDiffParam) && maxDiffParam > 0 ? maxDiffParam : 600_000;
+  const diffLineCount = diff.split("\n").length;
+  const tooBig = diff.length > maxDiffChars || diffLineCount > 4000;
+  const useFlatView = forceFlat || tooBig;
+
   const lowered = filter.trim().toLowerCase();
   const files = splitPatch(diff);
   // Pierre renders full patches natively; the fallback list serves filtering.
-  if (!lowered) {
+  if (!lowered && !useFlatView) {
     return (
       <>
         {files.map((filePatch, index) => (
@@ -205,12 +238,20 @@ function Diff({ commit, theme }: { commit: string; theme: Theme }) {
   const lines = filterPatch(diff, filter);
   return (
     <>
+      {tooBig && !filter.trim() && (
+        <div className="large-diff-notice">
+          Large diff: {(diff.length / 1024).toFixed(0)} KB,{" "}
+          {diffLineCount.toLocaleString()} lines — rendered as plain text.{" "}
+          <Button variant="outline" size="sm" onClick={() => setForceFlat(false)}>
+            try rich view anyway
+          </Button>
+        </div>
+      )}
       <Input
         value={filter}
         onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilter(e.target.value)}
         aria-label="find within diff"
         placeholder="find within this diff…"
-        autoFocus
       />
       <pre className="fallback-diff">
         {lines.map((line, i) => (
@@ -380,6 +421,7 @@ export default function App() {
   const [mode, setMode] = useState<Mode>(initial.mode);
   const [matchMode, setMatchMode] = useState<MatchMode>(initial.matchMode);
   const [theme, setTheme] = useState<Theme>(initial.theme);
+  const [helpTab, setHelpTab] = useState<"lanes" | "revsets">("lanes");
   const [limit, setLimit] = useState(200);
   const [data, setData] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -387,6 +429,34 @@ export default function App() {
   const [stats, setStats] = useState<Record<string, { added: number; removed: number }>>({});
   const debounceRef = useRef<number | undefined>(undefined);
   const tableRef = useRef<HTMLTableSectionElement | null>(null);
+  // Column sort + widths (persisted).
+  const [sort, setSort] = useState<SortState | null>(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem("itwas-col-sort") ?? "null");
+    } catch {
+      return null;
+    }
+  });
+  const [colWidths, setColWidths] = useState<Record<string, number>>(() => {
+    try {
+      return JSON.parse(window.localStorage.getItem("itwas-col-widths") ?? "{}");
+    } catch {
+      return {};
+    }
+  });
+  const colWidthsRef = useRef(colWidths);
+  colWidthsRef.current = colWidths;
+  // Collapsed/expanded changes-lane groups keyed by commit_id.
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  // Virtualization.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const rowRefs = useRef(new Map<number, HTMLTableRowElement>());
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(600);
+  // ?sel= permalink target (applied once results arrive, then cleared).
+  const [selTarget, setSelTarget] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get("sel"),
+  );
 
   // Reflect the theme on <html>: data-mode drives Kumo, data-theme our vars.
   useEffect(() => {
@@ -395,27 +465,88 @@ export default function App() {
     window.localStorage.setItem("itwas-theme", theme);
   }, [theme]);
 
-  const results = data?.results ?? [];
+  // Track the scroll container height for windowing.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const measure = () => setViewportH(el.clientHeight || 600);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const fetched = data?.results ?? [];
+  const results = useMemo(() => {
+    if (!sort) return fetched;
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const cmp = (a: SearchResult, b: SearchResult): number => {
+      switch (sort.key) {
+        case "change":
+          return a.change_id.localeCompare(b.change_id);
+        case "date":
+          return (a.timestamp ?? Number.NEGATIVE_INFINITY) - (b.timestamp ?? Number.NEGATIVE_INFINITY);
+        case "stats": {
+          const sa = stats[a.commit_id];
+          const sb = stats[b.commit_id];
+          const va = sa ? sa.added + sa.removed : -1;
+          const vb = sb ? sb.added + sb.removed : -1;
+          return va - vb;
+        }
+        case "title":
+          return a.title.localeCompare(b.title);
+      }
+    };
+    return [...fetched].sort(cmp) as SearchResult[];
+  }, [fetched, sort, stats]);
   const showRefsColumn = results.some(
     (r) => r.bookmarks.length > 0 || r.tags.length > 0,
   );
   const showFileColumn =
     mode !== "metadata" && results.some((r) => r.file !== null);
 
+  type FlatRow =
+    | { kind: "group"; key: string; rep: SearchResult; count: number; result: SearchResult }
+    | { kind: "line"; result: SearchResult };
+
+  const flatRows = useMemo<FlatRow[]>(() => {
+    if (mode !== "changes") {
+      return results.map((result) => ({ kind: "line", result }) as FlatRow);
+    }
+    const groups = new Map<string, SearchResult[]>();
+    for (const r of results) {
+      const bucket = groups.get(r.commit_id);
+      if (bucket) bucket.push(r);
+      else groups.set(r.commit_id, [r]);
+    }
+    const flat: FlatRow[] = [];
+    Array.from(groups.entries()).forEach(([key, rows], groupIndex) => {
+      flat.push({ kind: "group", key, rep: rows[0], result: rows[0], count: rows.length });
+      const expanded = expandedGroups[key] ?? groupIndex === 0;
+      if (expanded) {
+        for (const r of rows) flat.push({ kind: "line", result: r });
+      }
+    });
+    return flat;
+  }, [mode, results, expandedGroups]);
+
+  const toggleGroup = useCallback((key: string) => {
+    setExpandedGroups((prev) => ({ ...prev, [key]: !(prev[key] ?? false) }));
+  }, []);
+
   const moveSelection = useCallback(
     (delta: number) => {
       setSelected((prev) =>
-        results.length === 0
+        flatRows.length === 0
           ? 0
-          : Math.min(results.length - 1, Math.max(0, prev + delta)),
+          : Math.min(flatRows.length - 1, Math.max(0, prev + delta)),
       );
     },
-    [results.length],
+    [flatRows.length],
   );
 
   const focusSelectedRow = useCallback(() => {
-    const rows = tableRef.current?.querySelectorAll("tr");
-    (rows?.[selected] as HTMLElement | undefined)?.focus();
+    rowRefs.current.get(selected)?.focus();
   }, [selected]);
 
   const onFilterKeyDown = useCallback(
@@ -430,10 +561,55 @@ export default function App() {
 
   // Keep the keyboard-selected row visible.
   useEffect(() => {
-    tableRef.current
-      ?.querySelectorAll("tr")
-      [selected]?.scrollIntoView({ block: "nearest" });
+    rowRefs.current.get(selected)?.scrollIntoView({ block: "nearest" });
   }, [selected]);
+
+  const onResultsScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSort((prev) => {
+      const next: SortState | null =
+        !prev || prev.key !== key
+          ? { key, dir: "asc" }
+          : prev.dir === "asc"
+            ? { key, dir: "desc" }
+            : null;
+      window.localStorage.setItem("itwas-col-sort", JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  const startResize = useCallback(
+    (key: string, e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startW =
+        colWidthsRef.current[key] ??
+        (key === "title" ? 320 : key === "refs" ? 140 : key === "file" ? 220 : 90);
+      const onMove = (ev: MouseEvent) => {
+        const width = Math.max(48, startW + ev.clientX - startX);
+        setColWidths((prev) => ({ ...prev, [key]: width }));
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        window.localStorage.setItem(
+          "itwas-col-widths",
+          JSON.stringify(colWidthsRef.current),
+        );
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [],
+  );
+
+  const insertRevset = useCallback((token: string) => {
+    setRevset((prev) => (prev.trim() ? `${prev.trimEnd()} ${token}` : token));
+  }, []);
 
   const params = useMemo(() => {
     const p = new URLSearchParams();
@@ -454,6 +630,35 @@ export default function App() {
     url.search = params;
     window.history.replaceState(null, "", url);
   }, [params]);
+
+  // Apply ?sel=<change_id> once results are available.
+  useEffect(() => {
+    if (!selTarget || flatRows.length === 0) return;
+    const index = flatRows.findIndex((row) => row.result.change_id === selTarget);
+    if (index >= 0) {
+      setSelected(index);
+      setSelTarget(null);
+    }
+  }, [selTarget, flatRows]);
+
+  // Mirror the selected revision into the URL (skipped while a deep-link
+  // sel is still pending so it isn't stripped before it can be applied).
+  useEffect(() => {
+    if (selTarget) return;
+    const url = new URL(window.location.href);
+    const current = flatRows[selected]?.result.change_id;
+    let changed = false;
+    if (current) {
+      if (url.searchParams.get("sel") !== current) {
+        url.searchParams.set("sel", current);
+        changed = true;
+      }
+    } else if (url.searchParams.has("sel")) {
+      url.searchParams.delete("sel");
+      changed = true;
+    }
+    if (changed) window.history.replaceState(null, "", url);
+  }, [selected, flatRows, selTarget]);
 
   // Search immediately on mount and on every debounced change.
   useEffect(() => {
@@ -490,13 +695,18 @@ export default function App() {
       .catch(() => {});
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const selectedResult = flatRows[selected]?.result;
+  const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - WINDOW_OVERSCAN);
+  const end = Math.min(
+    flatRows.length,
+    Math.ceil((scrollTop + viewportH) / ROW_HEIGHT) + WINDOW_OVERSCAN,
+  );
   const isScoped =
     Boolean(revset.trim()) ||
     Boolean(path.trim()) ||
     Boolean(after.trim()) ||
     Boolean(until.trim()) ||
     query.trim().length > 0;
-  const selectedResult = results[selected];
   const countLabel =
     data === null
       ? "…"
@@ -594,16 +804,53 @@ export default function App() {
         ?
       </Popover.Trigger>
           <Popover.Content align="start">
-            <table className="lane-help">
-              <tbody>
-                {LANES.map((lane) => (
-                  <tr key={lane}>
-                    <td className="relation parent">{lane}</td>
-                    <td>{LANE_HELP[lane]}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <div className="help-tabs">
+              <Button
+                variant={helpTab === "lanes" ? "primary" : "ghost"}
+                size="sm"
+                onClick={() => setHelpTab("lanes")}
+              >
+                Lanes
+              </Button>
+              <Button
+                variant={helpTab === "revsets" ? "primary" : "ghost"}
+                size="sm"
+                onClick={() => setHelpTab("revsets")}
+              >
+                Revsets
+              </Button>
+            </div>
+            {helpTab === "lanes" ? (
+              <table className="lane-help">
+                <tbody>
+                  {LANES.map((lane) => (
+                    <tr key={lane}>
+                      <td className="relation parent">{lane}</td>
+                      <td>{LANE_HELP[lane]}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <table className="lane-help cheatsheet">
+                <tbody>
+                  {REVSET_CHEATSHEET.map(([token, description]) => (
+                    <tr key={token}>
+                      <td>
+                        <button
+                          className="cheatsheet-token"
+                          title={`insert into revset field`}
+                          onClick={() => insertRevset(token)}
+                        >
+                          {token}
+                        </button>
+                      </td>
+                      <td>{description}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </Popover.Content>
         </Popover>
         <Segmented values={MATCH_MODES} value={matchMode} onChange={setMatchMode} />
@@ -629,28 +876,139 @@ export default function App() {
         }
       >
       <Splitter.Panel id="list">
-        <div className="results-scroll">
+        <div
+          className="results-scroll"
+          ref={scrollRef}
+          onScroll={onResultsScroll}
+        >
         <table className="results">
+          <colgroup>
+            <col style={colWidths.marker ? { width: colWidths.marker } : undefined} />
+            <col style={colWidths.change ? { width: colWidths.change } : undefined} />
+            {showRefsColumn && <col style={colWidths.refs ? { width: colWidths.refs } : undefined} />}
+            <col style={colWidths.date ? { width: colWidths.date } : undefined} />
+            <col style={colWidths.stats ? { width: colWidths.stats } : undefined} />
+            {showFileColumn && <col style={colWidths.file ? { width: colWidths.file } : undefined} />}
+            <col />
+          </colgroup>
           <thead>
             <tr>
               <th />
-              <th>change</th>
-              {showRefsColumn && <th>refs</th>}
-              <th>date</th>
-              <th>stats</th>
-              {showFileColumn && <th>file</th>}
-              <th className="title">title</th>
+              {SORTABLE_COLUMNS.map((key) => {
+                const label = key === "change" ? "change" : key;
+                const active = sort?.key === key;
+                return (
+                  <th
+                    key={key}
+                    style={colWidths[key] ? { width: colWidths[key] } : undefined}
+                    aria-sort={
+                      active ? (sort!.dir === "asc" ? "ascending" : "descending") : "none"
+                    }
+                  >
+                    <span className="th-inner">
+                      <button
+                        className="th-sort"
+                        onClick={() => toggleSort(key)}
+                        title={`sort by ${label}`}
+                      >
+                        {label}
+                        {active ? (sort!.dir === "asc" ? " ▲" : " ▼") : ""}
+                      </button>
+                      <span
+                        className="resize-handle"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label={`resize ${label} column`}
+                        onMouseDown={(e) => startResize(key, e)}
+                      />
+                    </span>
+                  </th>
+                );
+              })}
+              {showRefsColumn && (
+                <th style={colWidths.refs ? { width: colWidths.refs } : undefined}>
+                  <span className="th-inner">
+                    refs
+                    <span
+                      className="resize-handle"
+                      role="separator"
+                      aria-label="resize refs column"
+                      onMouseDown={(e) => startResize("refs", e)}
+                    />
+                  </span>
+                </th>
+              )}
+              {showFileColumn && (
+                <th style={colWidths.file ? { width: colWidths.file } : undefined}>
+                  <span className="th-inner">
+                    file
+                    <span
+                      className="resize-handle"
+                      role="separator"
+                      aria-label="resize file column"
+                      onMouseDown={(e) => startResize("file", e)}
+                    />
+                  </span>
+                </th>
+              )}
+              <th className="title">
+                <span className="th-inner">title</span>
+              </th>
             </tr>
           </thead>
           <tbody ref={tableRef}>
-            {results.map((result, index) => {
+            {flatRows.length > 0 && start > 0 && (
+              <tr style={{ height: start * ROW_HEIGHT }} aria-hidden="true">
+                <td colSpan={100} />
+              </tr>
+            )}
+            {flatRows.slice(start, end).map((row, offset) => {
+              const index = start + offset;
+              if (row.kind === "group") {
+                const expanded = expandedGroups[row.key] ?? index === 0;
+                return (
+                  <tr
+                    key={"g:" + row.key}
+                    tabIndex={0}
+                    ref={(el) => {
+                      if (el) rowRefs.current.set(index, el);
+                      else rowRefs.current.delete(index);
+                    }}
+                    className="group-header"
+                    onClick={() => toggleGroup(row.key)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        toggleGroup(row.key);
+                      }
+                    }}
+                  >
+                    <td className="marker">{expanded ? "▾" : "▸"}</td>
+                    <td>
+                      <ChangeId value={row.rep.change_id} />
+                    </td>
+                    {showRefsColumn && <td className="refs" />}
+                    <td className="date">
+                      {row.rep.timestamp !== null ? relative(row.rep.timestamp) : ""}
+                    </td>
+                    <td className="stat">
+                      <Badge variant="secondary">{row.count} matches</Badge>
+                    </td>
+                    {showFileColumn && <td className="file" />}
+                    <td className="title" title={row.rep.title}>
+                      {row.rep.title}
+                    </td>
+                  </tr>
+                );
+              }
+              const result = row.result;
               const stat = stats[result.commit_id];
               return (
                 <tr
                   key={result.commit_id + result.title + index}
                   tabIndex={0}
                   aria-selected={index === selected}
-                  className={index === selected ? "selected" : ""}
+                  className={`${index === selected ? "selected" : ""}${mode === "changes" ? " line-row" : ""}`}
                   onClick={() => setSelected(index)}
                   onKeyDown={(e) => {
                     if (e.key === "ArrowDown") {
@@ -664,7 +1022,7 @@ export default function App() {
                       setSelected(0);
                     } else if (e.key === "End") {
                       e.preventDefault();
-                      setSelected(results.length - 1);
+                      setSelected(flatRows.length - 1);
                     }
                   }}
                 >
@@ -721,10 +1079,39 @@ export default function App() {
                   )}
                   <td className="title" title={result.title}>
                     {result.title || <span className="date">(no description)</span>}
+                    <span className="row-actions">
+                      <button
+                        className="row-action"
+                        aria-label={`copy change id ${result.change_id}`}
+                        title="copy change id"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard?.writeText(result.change_id);
+                        }}
+                      >
+                        ⧉ id
+                      </button>
+                      <button
+                        className="row-action"
+                        aria-label={`copy jj new ${result.change_id}`}
+                        title="copy jj new command"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigator.clipboard?.writeText(`jj new ${result.change_id}`);
+                        }}
+                      >
+                        ⧉ jj new
+                      </button>
+                    </span>
                   </td>
                 </tr>
               );
             })}
+            {flatRows.length > 0 && (flatRows.length - end) * ROW_HEIGHT > 0 && (
+              <tr style={{ height: (flatRows.length - end) * ROW_HEIGHT }} aria-hidden="true">
+                <td colSpan={100} />
+              </tr>
+            )}
           </tbody>
         </table>
         </div>
