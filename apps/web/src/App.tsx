@@ -239,7 +239,12 @@ function Related({ commit }: { commit: string }) {
       <tbody>
         {related.map((change) => (
           <tr key={change.relation + change.change_id}>
-            <td className={`relation ${change.relation}`}>[{change.relation}]</td>
+            <td
+              className={`relation ${change.relation}`}
+              title={change.relation === "parent" ? "Direct parent of the selected revision" : "Direct child of the selected revision"}
+            >
+              [{change.relation}]
+            </td>
             <td>
               <ChangeId value={change.change_id} />
             </td>
@@ -485,6 +490,12 @@ export default function App() {
       .catch(() => {});
   }, [data]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const isScoped =
+    Boolean(revset.trim()) ||
+    Boolean(path.trim()) ||
+    Boolean(after.trim()) ||
+    Boolean(until.trim()) ||
+    query.trim().length > 0;
   const selectedResult = results[selected];
   const countLabel =
     data === null
@@ -493,7 +504,7 @@ export default function App() {
         ? "no matches"
         : data.truncated
           ? `${data.matches}+ matches`
-          : `${data.matches} match${data.matches === 1 ? "" : "es"}`;
+          : `${data.matches} match${data.matches === 1 ? "" : "es"}${isScoped ? " (scoped)" : ""}`;
 
   return (
     <div className="app">
